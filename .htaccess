@@ -1,0 +1,2 @@
+# Defense in depth. Set the virtual host document root to public/, never this folder.
+Require all denied

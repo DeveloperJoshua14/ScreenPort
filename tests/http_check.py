@@ -1,0 +1,86 @@
+"""Check the running isolated preview over HTTP; no external mutations."""
+import json
+import urllib.error
+import urllib.request
+import http.cookiejar
+import uuid
+
+BASE = "http://127.0.0.1:8098"
+checks = 0
+
+def check(condition, label):
+    global checks
+    checks += 1
+    if not condition:
+        raise AssertionError(label)
+
+def client():
+    return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+def request(opener, action, body=None, token=None, origin=BASE):
+    headers = {}
+    if body is not None:
+        headers = {"Content-Type": "application/json", "Origin": origin}
+        if token:
+            headers["X-CSRF-Token"] = token
+    req = urllib.request.Request(BASE + "/api.php?action=" + action,
+        data=json.dumps(body).encode() if body is not None else None, headers=headers)
+    try:
+        with opener.open(req, timeout=120) as response:
+            return response.status, json.load(response), response.headers
+    except urllib.error.HTTPError as error:
+        return error.code, json.load(error), error.headers
+
+c = client()
+status, result, headers = request(c, "session")
+check(status == 200 and result["data"]["user"] is None, "guest session")
+csrf = result["data"]["csrf"]
+check("no-store" in headers["Cache-Control"], "private API cache disabled")
+check("HttpOnly" in headers["Set-Cookie"] and "SameSite=Strict" in headers["Set-Cookie"], "protected cookie")
+status, _, _ = request(c, "downloads")
+check(status == 401, "downloads require authentication")
+status, _, _ = request(c, "admin")
+check(status == 401, "admin requires authentication")
+status, _, _ = request(c, "login", {"username": "preview", "password": "LocalPreview!Only2026"})
+check(status == 403, "login CSRF is required")
+status, _, _ = request(c, "login", {"username": "preview", "password": "LocalPreview!Only2026"}, csrf, "https://attacker.invalid")
+check(status == 403, "foreign origin rejected")
+status, result, _ = request(c, "login", {"username": "preview", "password": "LocalPreview!Only2026"}, csrf)
+check(status == 200 and result["data"]["user"]["role"] == "admin", "valid admin login")
+csrf = result["data"]["csrf"]
+status, result, _ = request(c, "admin")
+check(status == 200, "admin settings accessible")
+check(all(f["value"] == "" for f in result["data"]["settings"] if f["secret"]), "API returns no credential values")
+member_name = "testmember-" + uuid.uuid4().hex[:8]
+status, result, _ = request(c, "admin-user-create", {"username": member_name, "email": member_name + "@screenport.invalid", "password": "TestMemberPassword2026!", "role": "user"}, csrf)
+check(status == 200, "admin creates approved member")
+status, result, _ = request(c, "admin")
+member = next(u for u in result["data"]["users"] if u["username"] == member_name)
+member_client = client()
+_, member_session, _ = request(member_client, "session")
+status, result, _ = request(member_client, "login", {"username": member_name, "password": "TestMemberPassword2026!"}, member_session["data"]["csrf"])
+check(status == 200, "member can sign in")
+member_token = result["data"]["csrf"]
+status, _, _ = request(member_client, "admin")
+check(status == 403, "member cannot read admin settings")
+status, _, _ = request(member_client, "admin-settings", {"settings": {"DOWNLOADS_ENABLED": "true"}}, member_token)
+check(status == 403, "member cannot change integration settings")
+status, result, _ = request(member_client, "downloads")
+check(status == 200 and result["data"]["requests"] == [], "member sees only subscribed requests")
+status, _, _ = request(c, "admin-user-update", {"id": member["id"], "role": "user", "status": "disabled"}, csrf)
+check(status == 200, "admin disables member")
+status, _, _ = request(member_client, "downloads")
+check(status == 401, "disabled member session is revoked immediately")
+status, result, _ = request(c, "request", {"type": "movie", "id": 550}, csrf)
+check(status == 409 and "paused" in result["error"], "preview downloads cannot mutate real server")
+for path in ["/.env", "/app/Config.php", "/storage/screenport.sqlite", "/composer.json", "/../.env", "/%2e%2e/.env"]:
+    try:
+        c.open(BASE + path)
+        check(False, "private file protection: " + path)
+    except urllib.error.HTTPError as e:
+        check(e.code in [403, 404], "private file protection: " + path)
+status, result, _ = request(c, "logout", {}, csrf)
+check(status == 200, "empty object mutation body accepted")
+status, _, _ = request(c, "admin")
+check(status == 401, "logout revokes access")
+print(f"PASS: {checks} HTTP security checks. No downloads or email sent.")

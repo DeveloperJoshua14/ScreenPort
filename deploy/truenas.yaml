@@ -1,0 +1,32 @@
+# TrueNAS Install via YAML template. Customize absolute paths and proxy address first.
+# Build/load screenport:local on this host, or replace with your private registry image.
+services:
+  web:
+    image: screenport:local
+    restart: unless-stopped
+    env_file:
+      - /mnt/tank/apps/screenport/config/.env
+    environment:
+      STORAGE_PATH: /var/lib/screenport
+      # Replace with the exact private address of your HTTPS proxy.
+      TRUSTED_PROXY_IPS: "192.168.1.10"
+    ports:
+      # Bind only to your private LAN IP and restrict access to the HTTPS proxy.
+      - "192.168.1.20:8090:80"
+    volumes:
+      - /mnt/tank/apps/screenport/data:/var/lib/screenport
+    security_opt:
+      - no-new-privileges:true
+  worker:
+    image: screenport:local
+    restart: unless-stopped
+    user: "33:33"
+    env_file:
+      - /mnt/tank/apps/screenport/config/.env
+    environment:
+      STORAGE_PATH: /var/lib/screenport
+    volumes:
+      - /mnt/tank/apps/screenport/data:/var/lib/screenport
+    command: ["php", "bin/console.php", "worker"]
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,31 @@
+# Optional complete TLS ingress. Set SCREENPORT_DOMAIN and APP_URL in .env first.
+# Run: docker compose -f compose.yaml -f compose.https.yaml up -d --build
+services:
+  web:
+    environment:
+      TRUSTED_PROXY_IPS: 172.30.78.10
+  ingress:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SCREENPORT_DOMAIN: ${SCREENPORT_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      default:
+        ipv4_address: 172.30.78.10
+    depends_on:
+      - web
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.78.0/24
+volumes:
+  caddy-data:
+  caddy-config:

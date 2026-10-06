@@ -1,0 +1,10 @@
+.env
+.env.*
+.git
+.tools
+.test-output
+storage
+vendor
+tests
+*.zip
+*.log

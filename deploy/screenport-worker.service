@@ -1,0 +1,18 @@
+[Unit]
+Description=ScreenPort download and email worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=screenport
+Group=screenport
+WorkingDirectory=/home/screenport.example.com/screenport
+ExecStart=/usr/local/lsws/lsphp82/bin/php bin/console.php worker
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

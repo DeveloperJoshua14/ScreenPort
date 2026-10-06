@@ -1,0 +1,30 @@
+services:
+  web:
+    build: .
+    image: screenport:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:80"
+    env_file: .env
+    environment:
+      STORAGE_PATH: /var/lib/screenport
+    volumes:
+      - screenport-data:/var/lib/screenport
+    security_opt:
+      - no-new-privileges:true
+  worker:
+    image: screenport:local
+    depends_on:
+      - web
+    restart: unless-stopped
+    user: www-data
+    env_file: .env
+    environment:
+      STORAGE_PATH: /var/lib/screenport
+    volumes:
+      - screenport-data:/var/lib/screenport
+    command: ["php", "bin/console.php", "worker"]
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  screenport-data:

@@ -1,0 +1,10 @@
+Options -Indexes
+Require all granted
+DirectoryIndex index.php
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule (^|/)\. - [F,L]
+</IfModule>
