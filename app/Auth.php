@@ -66,9 +66,15 @@ final class Auth
         if(!filter_var($email,FILTER_VALIDATE_EMAIL) || strlen($email)>254) throw new ApiError('Enter a valid email address.',422);
         self::validatePassword($password);
         if(!in_array($role,['user','admin'],true) || !in_array($status,['pending','approved','disabled'],true)) throw new ApiError('Invalid account role or status.',422);
-        try { $this->db->run('INSERT INTO users(username,email,password_hash,role,status,created_at) VALUES(?,?,?,?,?,?)',[$username,$email,password_hash($password,PASSWORD_DEFAULT),$role,$status,time()]); }
+        try {
+            return $this->db->transaction(function() use($username,$email,$password,$role,$status) {
+                $this->db->run('INSERT INTO users(username,email,password_hash,role,status,created_at) VALUES(?,?,?,?,?,?)',[$username,$email,password_hash($password,PASSWORD_DEFAULT),$role,$status,time()]);
+                $id=$this->db->id();
+                if($status==='pending') (new ManagerAlerts($this->config,$this->db,$this->settings))->account($id);
+                return $id;
+            });
+        }
         catch(\PDOException $e) { if((string)$e->getCode()==='23000') throw new ApiError('That username or email is already registered.',409); throw $e; }
-        return $this->db->id();
     }
     public static function validatePassword(string $password): void
     {

@@ -87,7 +87,7 @@ try {
                 'settings'=>$settings->display(),'ready'=>$settings->ready(),
                 'worker_seen'=>$heartbeat ? json_decode($heartbeat['value'],true) : null,
                 'audit'=>$db->all('SELECT a.action,a.detail,a.created_at,u.username FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 30'),
-                'email_failures'=>(int)$db->one("SELECT (SELECT COUNT(*) FROM emails WHERE status='failed')+(SELECT COUNT(*) FROM folder_alerts WHERE status='failed') AS n")['n']]; break;
+                'email_failures'=>(int)$db->one("SELECT (SELECT COUNT(*) FROM emails WHERE status='failed')+(SELECT COUNT(*) FROM folder_alerts WHERE status='failed')+(SELECT COUNT(*) FROM manager_alerts WHERE status='failed') AS n")['n']]; break;
         case 'admin-search-log':
             $admin=$auth->admin(); $id=$integer($_GET,'id');
             $db->limit('search-log:'.$admin['id'],60,60);
@@ -117,6 +117,7 @@ try {
         case 'admin-email-retry':
             $admin=$auth->admin(); $db->run("UPDATE emails SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
             $db->run("UPDATE folder_alerts SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
+            $db->run("UPDATE manager_alerts SET status='pending',attempts=0,due_at=?,recipient=CASE WHEN kind='account_requested' THEN ? ELSE ? END WHERE status='failed'",[time(),trim($settings->get('ACCOUNT_MANAGER_EMAIL')) ?: $settings->get('DOWNLOAD_MANAGER_EMAIL'),$settings->get('DOWNLOAD_MANAGER_EMAIL')]);
             $db->audit((int)$admin['id'],'retried_emails'); $result=['message'=>'Failed emails scheduled for retry.']; break;
         case 'admin-connections':
             $admin=$auth->admin(); $db->limit('connections:'.$admin['id'],5,300); session_write_close();

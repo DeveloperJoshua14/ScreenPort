@@ -23,6 +23,7 @@ final class Settings
         'TV_ROOT'=>['label'=>'TV download root','default'=>'/media/TV Shows'],
         'MATURE_TV_ROOT'=>['label'=>'Mature TV download root','default'=>'/media/Mature TV Shows'],
         'DOWNLOAD_MANAGER_EMAIL'=>['label'=>'Download manager email','default'=>''],
+        'ACCOUNT_MANAGER_EMAIL'=>['label'=>'Account manager email (blank uses download manager)','default'=>''],
         'SMTP_HOST'=>['label'=>'SMTP host','default'=>''],
         'SMTP_PORT'=>['label'=>'SMTP port','default'=>'587'],
         'SMTP_USERNAME'=>['label'=>'SMTP username','secret'=>true,'default'=>''],
@@ -32,6 +33,7 @@ final class Settings
         'MAIL_FROM_NAME'=>['label'=>'Sender name','default'=>'ScreenPort'],
         'REGISTRATION_OPEN'=>['label'=>'Allow account requests (approval required)','default'=>'true'],
         'DOWNLOADS_ENABLED'=>['label'=>'Enable new downloads','default'=>'true'],
+        'DOWNLOAD_START_TIMEOUT_MINUTES'=>['label'=>'Minutes without download progress before manager alert','default'=>'10'],
         'REQUEST_LIMIT_PER_DAY'=>['label'=>'Requests per user per day','default'=>'10'],
         'SELECTION_MIN_CONFIDENCE'=>['label'=>'Minimum selection confidence','default'=>'0.85'],
         'ASSUME_ORIGINAL_AUDIO'=>['label'=>'Assume original audio when no other audio is advertised','default'=>'true'],
@@ -87,12 +89,12 @@ final class Settings
     {
         if(str_ends_with($k,'_URL') && $v!=='') Http::baseUrl($v);
         if(in_array($k,['MOVIE_ROOT','TV_ROOT','MATURE_TV_ROOT'],true) && (!str_starts_with($v,'/media/') || str_contains($v,'..') || str_contains($v,'\\') || strlen($v)>180)) throw new ApiError('Download roots must be safe absolute paths under /media/.',422);
-        if(in_array($k,['DOWNLOAD_MANAGER_EMAIL','MAIL_FROM_ADDRESS'],true) && $v!=='' && !filter_var($v,FILTER_VALIDATE_EMAIL)) throw new ApiError('Enter a valid email address.',422);
+        if(in_array($k,['DOWNLOAD_MANAGER_EMAIL','ACCOUNT_MANAGER_EMAIL','MAIL_FROM_ADDRESS'],true) && $v!=='' && !filter_var($v,FILTER_VALIDATE_EMAIL)) throw new ApiError('Enter a valid email address.',422);
         if($k==='REGION' && !preg_match('/^[A-Z]{2}$/',$v)) throw new ApiError('Use a two-letter country code.',422);
         if($k==='TIMEZONE' && !in_array($v,\DateTimeZone::listIdentifiers(),true)) throw new ApiError('Invalid timezone.',422);
         if($k==='SMTP_ENCRYPTION' && !in_array($v,['tls','ssl'],true)) throw new ApiError('SMTP must use tls or ssl.',422);
         if(in_array($k,['REGISTRATION_OPEN','DOWNLOADS_ENABLED','UNKNOWN_RATING_MATURE','ALLOW_NEW_MOVIE_FOLDERS','ASSUME_ORIGINAL_AUDIO'],true) && !in_array($v,['true','false'],true)) throw new ApiError('Use true or false.',422);
-        $ranges=['SMTP_PORT'=>[1,65535],'REQUEST_LIMIT_PER_DAY'=>[1,100],'SELECTION_MIN_CONFIDENCE'=>[0.5,1],'MAX_TORRENT_GB'=>[1,2000],'TV_MAX_GIB_PER_HOUR'=>[0.2,20],'SEARCH_TIMEOUT'=>[5,120]];
+        $ranges=['SMTP_PORT'=>[1,65535],'REQUEST_LIMIT_PER_DAY'=>[1,100],'SELECTION_MIN_CONFIDENCE'=>[0.5,1],'MAX_TORRENT_GB'=>[1,2000],'TV_MAX_GIB_PER_HOUR'=>[0.2,20],'DOWNLOAD_START_TIMEOUT_MINUTES'=>[1,1440],'SEARCH_TIMEOUT'=>[5,120]];
         if(isset($ranges[$k]) && (!is_numeric($v) || (float)$v<$ranges[$k][0] || (float)$v>$ranges[$k][1])) throw new ApiError('Setting is outside its allowed range.',422);
         if($k==='MOVIE_EXISTING_FOLDERS') {
             $folders=array_map('trim',explode(',',$v));

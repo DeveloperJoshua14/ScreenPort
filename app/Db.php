@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS folder_alerts (
  path TEXT PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES requests(id), recipient TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, due_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS manager_alerts (
+ id INTEGER PRIMARY KEY, event_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, recipient TEXT NOT NULL,
+ payload TEXT NOT NULL, user_id INTEGER REFERENCES users(id), request_id INTEGER REFERENCES requests(id),
+ status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, due_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS manager_alerts_due ON manager_alerts(status,due_at);
+CREATE TABLE IF NOT EXISTS manager_alert_epochs (
+ request_id INTEGER PRIMARY KEY REFERENCES requests(id), generation INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS search_logs (
  id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES requests(id),
  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, report TEXT NOT NULL

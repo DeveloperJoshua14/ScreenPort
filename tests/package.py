@@ -5,7 +5,7 @@ import zipfile
 
 root = Path(__file__).resolve().parents[1]
 folders = ["app", "public", "bin", "resources", "deploy", "vendor"]
-names = ["composer.json", "composer.lock", "Dockerfile", "compose.yaml", "compose.https.yaml", ".env.example", ".htaccess", ".gitignore", ".dockerignore", "README.md"]
+names = ["composer.json", "composer.lock", "Dockerfile", "compose.yaml", "compose.https.yaml", ".env.example", ".htaccess", ".gitignore", ".dockerignore", "README.md", "UPDATES.md"]
 paths = [root / name for name in names]
 for folder in folders:
     paths.extend(p for p in (root / folder).rglob("*") if p.is_file())

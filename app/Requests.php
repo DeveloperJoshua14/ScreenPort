@@ -7,6 +7,17 @@ final class Requests
     public function __construct(private Config $config,private Db $db,private Settings $settings,private Catalog $catalog) {}
     public function enqueue(array $user,string $type,int $id): array
     {
+        if(!in_array($type,['movie','tv'],true) || $id<1) throw new ApiError('Invalid media request.',422);
+        if($this->config->demo()) throw new ApiError('Preview mode cannot start real downloads.',403);
+        $media=null;
+        try { return $this->submit($user,$type,$id,$media); }
+        catch(\Throwable $error) {
+            (new ManagerAlerts($this->config,$this->db,$this->settings))->submission((int)$user['id'],$type,$id,$media,$error);
+            throw $error;
+        }
+    }
+    private function submit(array $user,string $type,int $id,?array &$media): array
+    {
         if($this->config->demo()) throw new ApiError('Preview mode cannot start real downloads.',403);
         if(!$this->settings->bool('DOWNLOADS_ENABLED')) throw new ApiError('New downloads are paused by an admin.',409);
         if(!$this->settings->ready()) throw new ApiError('An admin needs to complete the catalog, downloader, AI, and email settings first.',503);
@@ -70,6 +81,7 @@ final class Requests
             $payload=json_decode($job['payload'] ?? '{}',true) ?: [];
             unset($payload['search_restarts']);
             if(!empty($payload['search_id'])) $payload['restart_search']=true;
+            $this->db->run('INSERT INTO manager_alert_epochs(request_id,generation) VALUES(?,1) ON CONFLICT(request_id) DO UPDATE SET generation=generation+1',[$id]);
             $this->db->run("UPDATE requests SET status='queued',message='Retry scheduled by admin',updated_at=? WHERE id=?",[time(),$id]);
             $this->db->run("UPDATE jobs SET status='pending',attempts=0,last_error=NULL,due_at=?,payload=? WHERE id=?",[time(),json_encode($payload,JSON_THROW_ON_ERROR),$job['id']]);
             $this->db->audit($admin,'retried_request',(string)$id);

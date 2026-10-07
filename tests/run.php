@@ -197,8 +197,13 @@ try {
     for($i=0;$i<10;$i++) { $db->run('UPDATE jobs SET due_at=? WHERE request_id=? AND kind=?',[time()-1,$lost['id'],'acquire']); $worker->tick(); }
     check(count($searches)===$searchCount+3,'repeated lost searches have a bounded restart count');
     check($db->one('SELECT status FROM requests WHERE id=?',[$lost['id']])['status']==='failed','persistent search loss stops for admin review');
+    $failureAlerts=$db->all('SELECT * FROM manager_alerts WHERE request_id=?',[$lost['id']]);
+    check(count($failureAlerts)===2,'background failure queues initial and final manager alerts only');
+    check(count(array_filter($failureAlerts,fn($e)=>$e['status']==='sent' && $e['recipient']==='manager@example.test'))===2,'worker delivers acquisition failures only to download manager');
+    check(str_contains($deliveries['manager@example.test']['text'],'Automatic retries have stopped'),'final acquisition email explains admin review');
     check(count($adds)===4,'persistent search loss starts no download');
     $loseAllSearches=false; $requests->retry((int)$lost['id'],$a);
+    check((int)$db->one('SELECT generation FROM manager_alert_epochs WHERE request_id=?',[$lost['id']])['generation']===1,'admin retry starts a fresh notification cycle');
     $retryJob=$db->one("SELECT payload FROM jobs WHERE request_id=? AND kind='acquire'",[$lost['id']]);
     check(!isset(json_decode($retryJob['payload'],true)['search_restarts']),'admin retry resets search recovery limit');
     for($i=0;$i<5;$i++) { $db->run('UPDATE jobs SET due_at=? WHERE request_id=? AND kind=?',[time()-1,$lost['id'],'acquire']); $worker->tick(); }
@@ -207,6 +212,7 @@ try {
     $noSelection=$requests->enqueue($user,'movie',105);
     for($i=0;$i<10;$i++) { $db->run('UPDATE jobs SET due_at=? WHERE request_id=? AND kind=?',[time()-1,$noSelection['id'],'acquire']); $worker->tick(); }
     check($db->one('SELECT status FROM requests WHERE id=?',[$noSelection['id']])['status']==='failed','empty model decisions stop after three failures');
+    check((int)$db->one('SELECT COUNT(*) AS n FROM manager_alerts WHERE request_id=?',[$noSelection['id']])['n']===2,'no eligible model selection produces manager notifications');
     check(count($searches)===$searchCount+3,'successful polling cannot reset repeated acquire failures indefinitely');
     $emptyReport=(new SearchLog($db,$settings))->forRequest((int)$noSelection['id']);
     check($emptyReport[0]['report']['outcome']==='no_selection' && $emptyReport[0]['report']['decision']['model_called'],'empty model choice has a distinct logged outcome');

@@ -15,6 +15,8 @@ final class Worker
         $this->db->run("INSERT INTO cache VALUES('worker_heartbeat',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,expires_at=excluded.expires_at",[json_encode(time()),time()+300]);
         $this->db->run("UPDATE jobs SET status='pending' WHERE status='running'");
         $this->settings->reload(); $count=0;
+        // Deliver account/intake alerts before potentially slow acquisition jobs.
+        (new ManagerAlerts($this->config,$this->db,$this->settings,$this->testDelivery))->deliver();
         $jobs=$this->db->all("SELECT * FROM jobs WHERE status='pending' AND due_at<=? ORDER BY CASE kind WHEN 'notify' THEN 0 WHEN 'monitor' THEN 1 ELSE 2 END,due_at LIMIT 25",[time()]);
         foreach($jobs as $job) {
             $this->db->run("UPDATE jobs SET status='running' WHERE id=?",[$job['id']]);
@@ -28,14 +30,21 @@ final class Worker
                 $attempts=(int)$job['attempts']+1;
                 $message=$e instanceof \JsonException ? 'A service returned invalid data.' : $this->safeMessage($e);
                 $terminal=$attempts>=3;
-                $this->db->run('UPDATE jobs SET status=?,attempts=?,last_error=?,due_at=? WHERE id=?',[$terminal ? 'failed' : 'pending',$attempts,$message,time()+min(900,30*2**$attempts),$job['id']]);
-                if($job['kind']==='acquire') $this->state((int)$job['request_id'],$terminal ? 'failed' : 'queued',$message.($terminal ? ' Admin review is required.' : ' Retrying shortly.'));
-                $this->db->audit(null,'worker_error',$job['kind'].' request '.$job['request_id'].': '.$message);
+                $this->db->transaction(function() use($job,$terminal,$attempts,$message) {
+                    $this->db->run('UPDATE jobs SET status=?,attempts=?,last_error=?,due_at=? WHERE id=?',[$terminal ? 'failed' : 'pending',$attempts,$message,time()+min(900,30*2**$attempts),$job['id']]);
+                    if($job['kind']==='acquire') {
+                        $this->state((int)$job['request_id'],$terminal ? 'failed' : 'queued',$message.($terminal ? ' Admin review is required.' : ' Retrying shortly.'));
+                        (new ManagerAlerts($this->config,$this->db,$this->settings))->acquisition((int)$job['request_id'],$message,$terminal,$attempts);
+                    }
+                    if($job['kind']==='monitor') (new ManagerAlerts($this->config,$this->db,$this->settings))->monitoring((int)$job['request_id'],'Could not verify qBittorrent download status: '.$message);
+                    $this->db->audit(null,'worker_error',$job['kind'].' request '.$job['request_id'].': '.$message);
+                });
             }
             $count++;
         }
         $this->sendPendingEmails();
         (new FolderAlerts($this->config,$this->db,$this->settings,$this->testDelivery))->deliver();
+        (new ManagerAlerts($this->config,$this->db,$this->settings,$this->testDelivery))->deliver();
         $this->db->run('DELETE FROM rate_limits WHERE expires_at<?',[time()]);
         $this->db->run('DELETE FROM cache WHERE expires_at<?',[time()-86400]);
         return $count;
@@ -201,14 +210,17 @@ final class Worker
     }
     private function monitor(array $job): void
     {
-        $rid=(int)$job['request_id']; $torrents=$this->refresh($rid); $complete=(bool)$torrents; $error=false; $missing=false;
+        $rid=(int)$job['request_id']; $torrents=$this->refresh($rid); $complete=(bool)$torrents; $error=false; $missing=false; $notStarted=false;
         foreach($torrents as $t) {
             $s=json_decode($t['snapshot'],true) ?: [];
             if(empty($s)) $missing=true;
             if(($s['progress'] ?? 0)<1) $complete=false;
             if(in_array($s['state'] ?? '',['error','missingFiles'],true)) $error=true;
+            if(($s['progress'] ?? 0)<=0 && ($s['downloaded'] ?? 0)<=0 && !empty($t['added_at']) && time()-(int)$t['added_at']>=(int)$this->settings->get('DOWNLOAD_START_TIMEOUT_MINUTES')*60) $notStarted=true;
         }
-        $this->state($rid,$complete ? 'complete' : 'downloading',$complete ? 'Ready in your media folder' : ($missing ? 'A torrent is missing from qBittorrent. Admin review needed.' : ($error ? 'qBittorrent reported a file or disk error. Admin review needed.' : 'Downloading · estimates update as peers connect')));
+        if($missing || $error || $notStarted) (new ManagerAlerts($this->config,$this->db,$this->settings))->monitoring($rid,
+            $missing ? 'One or more requested torrents are missing from qBittorrent.' : ($error ? 'qBittorrent reported a file or disk error for a requested torrent.' : 'One or more torrents have transferred no confirmed data within '.$this->settings->get('DOWNLOAD_START_TIMEOUT_MINUTES').' minutes of submission.'));
+        $this->state($rid,$complete ? 'complete' : 'downloading',$complete ? 'Ready in your media folder' : ($missing ? 'A torrent is missing from qBittorrent. Admin review needed.' : ($error ? 'qBittorrent reported a file or disk error. Admin review needed.' : ($notStarted ? 'A torrent has not started transferring data within the configured timeout. Admin review needed.' : 'Downloading · estimates update as peers connect'))));
         if($complete) $this->done($job); else $this->pending($job,[],60);
     }
     private function notify(array $job): void

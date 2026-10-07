@@ -50,6 +50,42 @@ final class Mailer
             'text'=>$text,'html'=>'<div style="font-family:Arial,sans-serif;max-width:620px"><h1>New movie folder</h1><p>Movie: '.$esc($title).
             '</p><p>Destination: <strong>'.$esc($path).'</strong></p><p>This destination is outside your existing movie folder list. Check the Movies library in Jellyfin and add this location if needed.</p><p>qBittorrent was asked to save here; ScreenPort cannot inspect the remote filesystem. This alert is sent once per destination, separately from download updates.</p></div>'];
     }
+    private static function managerContent(string $subject,string $heading,array $details,string $action,string $site): array
+    {
+        $esc=static fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+        $text=$heading."\n\n"; $html='<div style="font-family:Arial,sans-serif;max-width:620px"><h1>'.$esc($heading).'</h1>';
+        foreach($details as $label=>$value) { $text.=$label.': '.$value."\n"; $html.='<p><strong>'.$esc($label).':</strong> '.$esc($value).'</p>'; }
+        $text.="\n".$action."\n"; $html.='<p>'.$esc($action).'</p>';
+        $url=parse_url($site);
+        if($url && in_array($url['scheme'] ?? '',['https','http'],true) && !empty($url['host']) && !isset($url['user']) && !isset($url['pass']) && !preg_match('/[\x00-\x20\x7f]/',$site)) {
+            $text.="Open ScreenPort: ".$site."\n";
+            $html.='<p><a href="'.$esc($site).'">Open ScreenPort</a> (admin sign-in required)</p>';
+        }
+        return ['subject'=>$subject,'text'=>$text,'html'=>$html.'</div>'];
+    }
+    public static function accountContent(?array $user,string $site): array
+    {
+        if(!$user) throw new \RuntimeException('The requested account is unavailable.');
+        return self::managerContent('ScreenPort: account approval requested','New account request',
+            ['Username'=>$user['username'],'Email'=>$user['email']],
+            'Open Administration → Accounts to review this request. The account requires approval before sign-in.',$site);
+    }
+    public static function failureContent(array $payload,?int $request,string $username,string $site): array
+    {
+        $details=['Media'=>$payload['title'],'Type'=>$payload['type'],'TMDB ID'=>(string)$payload['media_id'],'Stage'=>$payload['stage'],'Reason'=>$payload['reason']];
+        if($request) $details['Request ID']=(string)$request;
+        if($username!=='') $details['Requested by']=$username;
+        if(isset($payload['attempt'])) $details['Failed attempt']=(string)$payload['attempt'];
+        $terminal=(bool)$payload['terminal'];
+        $action=$terminal ? ($request ? 'Automatic retries have stopped. Open Downloads → Search log to review the failure, then retry the request after fixing it.' : 'This submission was not queued. Review the reported reason; the user can submit again after it is resolved.')
+            : 'ScreenPort will retry automatically. This first-failure alert is sent once per request retry cycle; a final alert follows if automatic retries are exhausted.';
+        $details['Status']=$terminal ? 'Admin review required' : 'Retrying automatically';
+        if(!empty($payload['monitoring'])) {
+            $details['Status']='Download needs attention';
+            $action='Open Downloads and inspect the torrent in qBittorrent. The status is still monitored automatically; this alert does not stop or resubmit the torrent.';
+        }
+        return self::managerContent('ScreenPort: download failed to start'.($terminal ? ' — review required' : ' — retrying'),'Download failed to start',$details,$action,$site);
+    }
     public function send(string $email,array $content): void
     {
         if($this->config->demo()) throw new \RuntimeException('Email is disabled in preview mode.');
