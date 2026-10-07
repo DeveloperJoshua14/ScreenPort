@@ -19,7 +19,7 @@ final class Worker
         foreach($jobs as $job) {
             $this->db->run("UPDATE jobs SET status='running' WHERE id=?",[$job['id']]);
             try {
-                $this->qbit=new Qbit($this->settings);
+                $this->qbit=new Qbit($this->settings,$this->config);
                 match($job['kind']) {
                     'acquire'=>$this->acquire($job), 'notify'=>$this->notify($job), 'monitor'=>$this->monitor($job),
                     default=>throw new \RuntimeException('Unknown background job.')
@@ -35,6 +35,7 @@ final class Worker
             $count++;
         }
         $this->sendPendingEmails();
+        (new FolderAlerts($this->config,$this->db,$this->settings,$this->testDelivery))->deliver();
         $this->db->run('DELETE FROM rate_limits WHERE expires_at<?',[time()]);
         $this->db->run('DELETE FROM cache WHERE expires_at<?',[time()-86400]);
         return $count;
@@ -46,7 +47,7 @@ final class Worker
         return 'The background task encountered an error. Check configuration and service connectivity.';
     }
     private function state(int $rid,string $status,string $message): void { $this->db->run('UPDATE requests SET status=?,message=?,updated_at=? WHERE id=?',[$status,$message,time(),$rid]); }
-    private function pending(array $job,array $payload,int $delay=0): void { $this->db->run("UPDATE jobs SET status='pending',payload=?,due_at=?,attempts=0,last_error=NULL WHERE id=?",[json_encode($payload,JSON_THROW_ON_ERROR),time()+$delay,$job['id']]); }
+    private function pending(array $job,array $payload,int $delay=0): void { $this->db->run("UPDATE jobs SET status='pending',payload=?,due_at=?,attempts=CASE WHEN kind='acquire' THEN attempts ELSE 0 END,last_error=NULL WHERE id=?",[json_encode($payload,JSON_THROW_ON_ERROR),time()+$delay,$job['id']]); }
     private function done(array $job): void { $this->db->run("UPDATE jobs SET status='done',last_error=NULL WHERE id=?",[$job['id']]); }
     private function schedule(int $rid,string $kind,int $due): void
     {
@@ -55,6 +56,7 @@ final class Worker
     private function acquire(array $job): void
     {
         $rid=(int)$job['request_id']; $p=json_decode($job['payload'],true) ?: [];
+        $logs=new SearchLog($this->db,$this->settings);
         $r=$this->db->one('SELECT * FROM requests WHERE id=?',[$rid]);
         if(!$r) { $this->done($job); return; }
         if(!$this->settings->bool('DOWNLOADS_ENABLED')) { $this->pending($job,$p,60); return; }
@@ -69,31 +71,68 @@ final class Worker
             $this->db->run('UPDATE requests SET media=? WHERE id=?',[json_encode($media,JSON_THROW_ON_ERROR),$rid]);
         }
         if(!empty($p['restart_search'])) {
+            if(!empty($p['search_log_id'])) $logs->update((int)$p['search_log_id'],['outcome'=>'restarted','message'=>'Search restarted by admin retry.']);
             try { $this->qbit->stopSearch((int)$p['search_id']); $this->qbit->deleteSearch((int)$p['search_id']); } catch(\Throwable $e) {}
-            unset($p['search_id'],$p['started_at'],$p['restart_search']);
+            unset($p['search_id'],$p['started_at'],$p['restart_search'],$p['search_restarts'],$p['search_log_id']);
         }
+        $pattern=$p['media']['title'];
+        if($p['phase']==='movie') $pattern.=' '.$p['media']['year'];
+        elseif($p['phase']==='series') $pattern.=' complete';
+        else $pattern.=' S'.str_pad((string)$p['seasons'][$p['index']]['number'],2,'0',STR_PAD_LEFT).' complete';
+        $wanted=$p['phase']==='season' ? [$p['seasons'][$p['index']]] : $p['seasons'];
+        $logInfo=['query'=>$pattern,'phase'=>$p['phase'],'plugins'=>$this->settings->get('QBITTORRENT_SEARCH_PLUGINS'),
+            'media'=>array_intersect_key($p['media'],array_flip(['title','original_title','type','year','original_language','runtime'])),
+            'wanted_seasons'=>array_column($wanted,'number'),'outcome'=>'searching','message'=>'Waiting for qBittorrent results.'];
         if(empty($p['search_id'])) {
-            $pattern=$p['media']['title'];
-            if($p['phase']==='movie') $pattern.=' '.$p['media']['year'];
-            elseif($p['phase']==='series') $pattern.=' complete';
-            else $pattern.=' S'.str_pad((string)$p['seasons'][$p['index']]['number'],2,'0',STR_PAD_LEFT).' complete';
+            if((int)($p['search_restarts'] ?? 0)>2) throw new \RuntimeException('qBittorrent repeatedly lost its search job. Check server restarts, session timeout, and proxy routing before retrying.');
             $p['search_id']=$this->qbit->startSearch($pattern); $p['started_at']=time();
+            $p['search_log_id']=$logs->begin($rid,$logInfo+['search_id'=>$p['search_id']]);
             $this->state($rid,'searching',$p['phase']==='season' ? 'Searching for complete season '.$p['seasons'][$p['index']]['number'] : 'Searching available torrents');
             $this->pending($job,$p,5); return;
         }
-        $result=$this->qbit->results((int)$p['search_id']);
+        if(empty($p['search_log_id'])) {
+            $p['search_log_id']=$logs->begin($rid,$logInfo+['search_id'=>$p['search_id']]);
+            $this->db->run('UPDATE jobs SET payload=? WHERE id=?',[json_encode($p,JSON_THROW_ON_ERROR),$job['id']]);
+        }
+        try {
+            $result=$this->qbit->results((int)$p['search_id']);
+            if(($result['status'] ?? '')==='Running' && time()-$p['started_at']>=(int)$this->settings->get('SEARCH_TIMEOUT')) {
+                $this->qbit->stopSearch((int)$p['search_id']);
+                $result=$this->qbit->results((int)$p['search_id']);
+            }
+        } catch(\RuntimeException $e) {
+            $logs->update((int)$p['search_log_id'],['outcome'=>$e->getCode()===404 ? 'expired' : 'error','message'=>$this->safeMessage($e)]);
+            if($e->getCode()!==404) throw $e;
+            $p['search_restarts']=(int)($p['search_restarts'] ?? 0)+1;
+            unset($p['search_id'],$p['started_at'],$p['search_log_id']);
+            // Persist cleanup even on terminal failure; retry must never poll a lost ID.
+            $this->db->run('UPDATE jobs SET payload=? WHERE id=?',[json_encode($p,JSON_THROW_ON_ERROR),$job['id']]);
+            if($p['search_restarts']>2) throw new \RuntimeException('qBittorrent repeatedly lost its search job. Check server restarts, session timeout, and proxy routing before retrying.');
+            $this->state($rid,'searching','qBittorrent search expired or disappeared; starting a fresh search');
+            $this->pending($job,$p,5); return;
+        }
+        $logs->update((int)$p['search_log_id'],['search_status'=>$result['status'] ?? 'Unknown','total_found'=>(int)($result['total'] ?? count($result['results'] ?? [])),
+            'elapsed_seconds'=>max(0,time()-(int)$p['started_at'])]);
         if(($result['status'] ?? '')==='Running' && time()-$p['started_at']<(int)$this->settings->get('SEARCH_TIMEOUT')) { $this->pending($job,$p,5); return; }
-        if(($result['status'] ?? '')==='Running') { $this->qbit->stopSearch((int)$p['search_id']); $result=$this->qbit->results((int)$p['search_id']); }
-        $candidates=TorrentPolicy::candidates($result['results'] ?? [],$p['media']['type']==='movie' ? 15 : 30,$this->settings);
+        $filters=[];
+        $candidates=TorrentPolicy::candidates($result['results'] ?? [],$p['media']['type']==='movie' ? 15 : 30,$this->settings,$filters,$p['media'],$wanted,$p['phase']==='series');
+        $logs->update((int)$p['search_log_id'],['filters'=>$filters,'outcome'=>'reviewing','message'=>'Evaluating eligible candidates.']);
         $this->state($rid,'selecting','Comparing identity, language, quality, and size');
-        $wanted=$p['phase']==='season' ? [$p['seasons'][$p['index']]] : $p['seasons'];
-        $picked=(new Selector($this->settings))->select($p['media'],$candidates,$wanted,$p['phase']==='series');
+        $decision=[];
+        try {
+            $picked=(new Selector($this->settings))->select($p['media'],$candidates,$wanted,$p['phase']==='series',$decision);
+        } catch(\Throwable $e) {
+            $logs->update((int)$p['search_log_id'],['decision'=>$decision,'outcome'=>'error','message'=>$this->safeMessage($e)]);
+            throw $e;
+        }
+        $logs->update((int)$p['search_log_id'],['decision'=>$decision,'outcome'=>$picked ? 'selected' : ($candidates ? 'no_selection' : 'no_candidates'),
+            'message'=>$picked ? 'Selection passed server validation.' : ($candidates ? 'The model returned no selections.' : 'All results were excluded before model review.')]);
         try { $this->qbit->deleteSearch((int)$p['search_id']); } catch(\Throwable $e) {}
-        unset($p['search_id'],$p['started_at']);
+        unset($p['search_id'],$p['started_at'],$p['search_restarts'],$p['search_log_id']);
         // Save cleanup before any policy failure so an admin retry never polls a deleted search ID.
         $this->db->run('UPDATE jobs SET payload=? WHERE id=?',[json_encode($p,JSON_THROW_ON_ERROR),$job['id']]);
         if($p['phase']==='series' && !$picked) { $p['phase']='season'; $this->pending($job,$p); return; }
-        if(!$picked) throw new \RuntimeException('No torrent met the identity, language, quality, or complete-season requirements.');
+        if(!$picked) throw new \RuntimeException($candidates ? 'The model did not select a torrent. Admins can open the Search log in Downloads to see why.' : 'No search results passed the preliminary filters. Admins can open the Search log in Downloads to see why.');
         $p['picks']=array_merge($p['picks'],$picked);
         if($p['phase']==='season' && ++$p['index']<count($p['seasons'])) { $this->pending($job,$p); return; }
         $ids=array_column($p['picks'],'id');
@@ -121,14 +160,24 @@ final class Worker
                 if($known) $this->qbit->tagExisting($known[0]['hash'],$tag,$fresh['type']);
             }
             if($known) {
-                $this->db->run("UPDATE torrents SET state='added',hash=?,added_at=COALESCE(added_at,?),snapshot=? WHERE id=?",[$known[0]['hash'],time(),json_encode($this->snapshot($known[0])),$t['id']]);
+                // Reused torrents keep their actual location; they do not create our requested folder.
+                $actualPath=$known[0]['save_path'] ?? $t['save_path'];
+                $this->db->transaction(function() use($known,$t,$actualPath,$fresh,$rid) {
+                    $this->db->run("UPDATE torrents SET state='added',hash=?,save_path=?,added_at=COALESCE(added_at,?),snapshot=? WHERE id=?",[$known[0]['hash'],$actualPath,time(),json_encode($this->snapshot($known[0])),$t['id']]);
+                    if(isset($known[0]['save_path']) || $t['state']==='adding') (new FolderAlerts($this->config,$this->db,$this->settings))->queue($rid,$fresh,$actualPath);
+                });
                 continue;
             }
             // An ambiguous previous add is reconciled first. Never repeat a URL add that might have succeeded.
             if($t['state']==='adding') throw new \RuntimeException('A previous torrent add could not be confirmed. Inspect qBittorrent before retrying.');
-            $this->db->run("UPDATE torrents SET state='adding',added_at=? WHERE id=?",[time(),$t['id']]);
+            // Re-evaluate a persisted but unsubmitted plan against current folder rules.
+            $t['save_path']=$path;
+            $this->db->run("UPDATE torrents SET state='adding',save_path=?,added_at=? WHERE id=?",[$path,time(),$t['id']]);
             $this->qbit->add($t,$fresh['type']);
-            $this->db->run("UPDATE torrents SET state='added' WHERE id=?",[$t['id']]);
+            $this->db->transaction(function() use($t,$fresh,$rid) {
+                $this->db->run("UPDATE torrents SET state='added' WHERE id=?",[$t['id']]);
+                (new FolderAlerts($this->config,$this->db,$this->settings))->queue($rid,$fresh,$t['save_path']);
+            });
         }
         $this->state($rid,'downloading','Downloads started · first email update in about a minute');
         $this->schedule($rid,'notify',time()+60); $this->schedule($rid,'monitor',time()+60); $this->done($job);

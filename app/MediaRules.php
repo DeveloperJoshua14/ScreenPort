@@ -40,9 +40,7 @@ final class MediaRules
     public static function path(array $media,bool $separate,Settings $settings): string
     {
         if($media['type']==='movie') {
-            $genre=$media['genres'][0] ?? 'Other';
-            $map=json_decode($settings->get('MOVIE_GENRE_MAP'),true) ?: [];
-            return rtrim($settings->get('MOVIE_ROOT'),'/').'/'.self::folder($map[$genre] ?? $genre).'/';
+            return rtrim($settings->get('MOVIE_ROOT'),'/').'/'.MovieFolders::folder($media,$settings).'/';
         }
         $matureRatings=array_map('trim',explode(',',strtoupper($settings->get('MATURE_RATINGS'))));
         $rating=strtoupper($media['rating'] ?? 'Unrated');

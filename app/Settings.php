@@ -34,9 +34,14 @@ final class Settings
         'DOWNLOADS_ENABLED'=>['label'=>'Enable new downloads','default'=>'true'],
         'REQUEST_LIMIT_PER_DAY'=>['label'=>'Requests per user per day','default'=>'10'],
         'SELECTION_MIN_CONFIDENCE'=>['label'=>'Minimum selection confidence','default'=>'0.85'],
+        'ASSUME_ORIGINAL_AUDIO'=>['label'=>'Assume original audio when no other audio is advertised','default'=>'true'],
         'MAX_TORRENT_GB'=>['label'=>'Hard maximum size of one torrent in GB','default'=>'250'],
+        'TV_MAX_GIB_PER_HOUR'=>['label'=>'Maximum TV torrent GiB per hour of episodes','default'=>'2'],
         'SEARCH_TIMEOUT'=>['label'=>'Torrent search timeout in seconds','default'=>'45'],
-        'MOVIE_GENRE_MAP'=>['label'=>'Movie genre folder overrides (JSON, e.g. {"Science Fiction":"Sci-Fi"})','default'=>'{}'],
+        'MOVIE_EXISTING_FOLDERS'=>['label'=>'Existing movie folders (comma separated; keep Other as fallback)','default'=>MovieFolders::EXISTING],
+        'ALLOW_NEW_MOVIE_FOLDERS'=>['label'=>'Allow custom new movie folders (emails download manager)','default'=>'false'],
+        'MOVIE_FOLDER_OVERRIDES'=>['label'=>'Movie folder overrides by TMDB ID (JSON, e.g. {"1032863":"RomCom"})','default'=>'{}'],
+        'MOVIE_GENRE_MAP'=>['label'=>'Movie genre folder overrides (JSON, e.g. {"Science Fiction":"Adventure"})','default'=>'{}'],
     ];
     private array $rows=[];
     public function __construct(private Config $config,private Db $db) { $this->reload(); }
@@ -86,13 +91,21 @@ final class Settings
         if($k==='REGION' && !preg_match('/^[A-Z]{2}$/',$v)) throw new ApiError('Use a two-letter country code.',422);
         if($k==='TIMEZONE' && !in_array($v,\DateTimeZone::listIdentifiers(),true)) throw new ApiError('Invalid timezone.',422);
         if($k==='SMTP_ENCRYPTION' && !in_array($v,['tls','ssl'],true)) throw new ApiError('SMTP must use tls or ssl.',422);
-        if(in_array($k,['REGISTRATION_OPEN','DOWNLOADS_ENABLED','UNKNOWN_RATING_MATURE'],true) && !in_array($v,['true','false'],true)) throw new ApiError('Use true or false.',422);
-        $ranges=['SMTP_PORT'=>[1,65535],'REQUEST_LIMIT_PER_DAY'=>[1,100],'SELECTION_MIN_CONFIDENCE'=>[0.5,1],'MAX_TORRENT_GB'=>[1,2000],'SEARCH_TIMEOUT'=>[5,120]];
+        if(in_array($k,['REGISTRATION_OPEN','DOWNLOADS_ENABLED','UNKNOWN_RATING_MATURE','ALLOW_NEW_MOVIE_FOLDERS','ASSUME_ORIGINAL_AUDIO'],true) && !in_array($v,['true','false'],true)) throw new ApiError('Use true or false.',422);
+        $ranges=['SMTP_PORT'=>[1,65535],'REQUEST_LIMIT_PER_DAY'=>[1,100],'SELECTION_MIN_CONFIDENCE'=>[0.5,1],'MAX_TORRENT_GB'=>[1,2000],'TV_MAX_GIB_PER_HOUR'=>[0.2,20],'SEARCH_TIMEOUT'=>[5,120]];
         if(isset($ranges[$k]) && (!is_numeric($v) || (float)$v<$ranges[$k][0] || (float)$v>$ranges[$k][1])) throw new ApiError('Setting is outside its allowed range.',422);
-        if($k==='MOVIE_GENRE_MAP') {
+        if($k==='MOVIE_EXISTING_FOLDERS') {
+            $folders=array_map('trim',explode(',',$v));
+            if(count($folders)>100 || !in_array('Other',$folders,true)) throw new ApiError('List existing folders, including Other for the fallback.',422);
+            foreach($folders as $folder) if(!preg_match('/^[\pL\pN _-]{1,60}$/u',$folder)) throw new ApiError('Use simple movie folder names, separated by commas.',422);
+        }
+        if(in_array($k,['MOVIE_GENRE_MAP','MOVIE_FOLDER_OVERRIDES'],true)) {
             $map=json_decode($v,true);
-            if(!is_array($map) || ($v!=='{}' && array_is_list($map))) throw new ApiError('Genre overrides must be a JSON object.',422);
-            foreach($map as $name=>$folder) if(!is_string($folder) || !preg_match('/^[\pL\pN _-]{1,60}$/u',$folder)) throw new ApiError('Use simple folder names for genres.',422);
+            if(!is_array($map) || !str_starts_with(ltrim($v),'{')) throw new ApiError('Folder overrides must be a JSON object.',422);
+            foreach($map as $name=>$folder) {
+                if(!is_string($folder) || !preg_match('/^[\pL\pN _-]{1,60}$/u',$folder)) throw new ApiError('Use simple folder names for overrides.',422);
+                if($k==='MOVIE_FOLDER_OVERRIDES' && !preg_match('/^[1-9][0-9]{0,9}$/',(string)$name)) throw new ApiError('Movie overrides must use TMDB movie IDs as keys.',422);
+            }
         }
         if($k==='OPENAI_MODEL' && !preg_match('/^[a-zA-Z0-9._:-]{1,100}$/',$v)) throw new ApiError('Invalid model name.',422);
         if($k==='QBITTORRENT_SEARCH_PLUGINS' && !preg_match('/^[a-zA-Z0-9_|-]{1,250}$/',$v)) throw new ApiError('Invalid plugin list.',422);

@@ -39,6 +39,17 @@ final class Mailer
         $html.='<p style="font-size:12px;color:#a8acb6">Requested through ScreenPort. Estimates change as peers connect.</p></div>';
         return ['subject'=>'ScreenPort download update: '.$title,'html'=>$html,'text'=>$plain];
     }
+    public static function folderContent(array $media,string $path): array
+    {
+        $esc=static fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
+        $title=$media['title'];
+        $text="ScreenPort used a new movie destination\n\nMovie: ".$title."\nDestination: ".$path.
+            "\n\nThis folder is outside your configured existing movie folder list. Check the Movies library in Jellyfin and add this location if needed.\n".
+            "qBittorrent was asked to save here; ScreenPort cannot inspect the remote filesystem. This alert is sent once per destination, separately from download updates.\n";
+        return ['subject'=>'ScreenPort: new movie folder — check Jellyfin',
+            'text'=>$text,'html'=>'<div style="font-family:Arial,sans-serif;max-width:620px"><h1>New movie folder</h1><p>Movie: '.$esc($title).
+            '</p><p>Destination: <strong>'.$esc($path).'</strong></p><p>This destination is outside your existing movie folder list. Check the Movies library in Jellyfin and add this location if needed.</p><p>qBittorrent was asked to save here; ScreenPort cannot inspect the remote filesystem. This alert is sent once per destination, separately from download updates.</p></div>'];
+    }
     public function send(string $email,array $content): void
     {
         if($this->config->demo()) throw new \RuntimeException('Email is disabled in preview mode.');

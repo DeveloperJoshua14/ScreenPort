@@ -53,6 +53,15 @@ CREATE TABLE IF NOT EXISTS emails (
 CREATE TABLE IF NOT EXISTS audit (
  id INTEGER PRIMARY KEY, user_id INTEGER, action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS folder_alerts (
+ path TEXT PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES requests(id), recipient TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, due_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS search_logs (
+ id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL REFERENCES requests(id),
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, report TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS search_logs_request ON search_logs(request_id,id DESC);
 SQL);
     }
     public function run(string $sql, array $params=[]): \PDOStatement { $s=$this->pdo->prepare($sql); $s->execute($params); return $s; }

@@ -1,6 +1,6 @@
 <?php
 declare(strict_types=1);
-use ScreenPort\{ApiError,Auth,Http,Jellyfin,Qbit,Requests,Settings};
+use ScreenPort\{ApiError,Auth,Http,Jellyfin,Qbit,Requests,SearchLog,Settings};
 
 require dirname(__DIR__).'/app/bootstrap.php';
 header('Content-Type: application/json; charset=utf-8');
@@ -16,7 +16,7 @@ try {
     $action=$_GET['action'] ?? 'session';
     if(!is_string($action)) throw new ApiError('Invalid action.',422);
     $method=$_SERVER['REQUEST_METHOD'];
-    $read=['session','catalog','media','downloads','admin'];
+    $read=['session','catalog','media','downloads','admin','admin-search-log'];
     if(!in_array($method,['GET','POST'],true) || ($method==='GET' && !in_array($action,$read,true)) || ($method==='POST' && in_array($action,$read,true))) throw new ApiError('Method not allowed.',405);
     $body=[];
     if($method==='POST') {
@@ -87,7 +87,12 @@ try {
                 'settings'=>$settings->display(),'ready'=>$settings->ready(),
                 'worker_seen'=>$heartbeat ? json_decode($heartbeat['value'],true) : null,
                 'audit'=>$db->all('SELECT a.action,a.detail,a.created_at,u.username FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 30'),
-                'email_failures'=>(int)$db->one("SELECT COUNT(*) AS n FROM emails WHERE status='failed'")['n']]; break;
+                'email_failures'=>(int)$db->one("SELECT (SELECT COUNT(*) FROM emails WHERE status='failed')+(SELECT COUNT(*) FROM folder_alerts WHERE status='failed') AS n")['n']]; break;
+        case 'admin-search-log':
+            $admin=$auth->admin(); $id=$integer($_GET,'id');
+            $db->limit('search-log:'.$admin['id'],60,60);
+            if(!$db->one('SELECT id FROM requests WHERE id=?',[$id])) throw new ApiError('Request not found.',404);
+            $result=['request_id'=>$id,'logs'=>(new SearchLog($db,$settings))->forRequest($id)]; break;
         case 'admin-user-create':
             $admin=$auth->admin();
             $id=$auth->create($string($body,'username','',40),$string($body,'email','',254),$string($body,'password','',72),$string($body,'role','user',10),'approved');
@@ -111,6 +116,7 @@ try {
         case 'admin-retry': $admin=$auth->admin(); $requests->retry($integer($body,'id'),(int)$admin['id']); $result=['message'=>'Retry scheduled.']; break;
         case 'admin-email-retry':
             $admin=$auth->admin(); $db->run("UPDATE emails SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
+            $db->run("UPDATE folder_alerts SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
             $db->audit((int)$admin['id'],'retried_emails'); $result=['message'=>'Failed emails scheduled for retry.']; break;
         case 'admin-connections':
             $admin=$auth->admin(); $db->limit('connections:'.$admin['id'],5,300); session_write_close();

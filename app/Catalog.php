@@ -68,6 +68,8 @@ final class Catalog
             'backdrop'=>$img($backdrop,'w1280'),'score'=>round((float)($d['vote_average'] ?? 0),1),
             'genres'=>array_column($d['genres'] ?? [],'name'),'runtime'=>(int)($d['runtime'] ?? ($d['episode_run_time'][0] ?? 45)),
             'imdb_id'=>$d['external_ids']['imdb_id'] ?? $d['imdb_id'] ?? null,'status'=>$d['status'] ?? '',
+            'adult'=>(bool)($d['adult'] ?? false),
+            'collection'=>isset($d['belongs_to_collection']['id']) ? ['id'=>(int)$d['belongs_to_collection']['id'],'name'=>(string)($d['belongs_to_collection']['name'] ?? '')] : null,
             'seasons'=>$d['seasons'] ?? []]+MediaRules::availability($d,$type,$this->settings->get('REGION'),$this->today());
     }
     public function completedSeasons(array $media,bool $fresh=true): array

@@ -1,6 +1,7 @@
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#media-dialog');
 const accountDialog = document.querySelector('#account-dialog');
+const searchLogDialog = document.querySelector('#search-log-dialog');
 const state = { user: null, csrf: '', view: 'discover', type: 'movie', query: '', page: 1, totalPages: 1, media: [], downloads: [], adminTab: 'accounts', demo: false, catalogReady: false, busy: false };
 let catalogVersion = 0, downloadTimer, toastTimer;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -159,6 +160,7 @@ async function showMedia(key) {
 function bindClose(target) { target.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => target.close())); }
 dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 accountDialog.addEventListener('click', event => { if (event.target === accountDialog) accountDialog.close(); });
+searchLogDialog.addEventListener('click', event => { if (event.target === searchLogDialog) searchLogDialog.close(); });
 const statusLabel = status => ({ queued: 'Queued', searching: 'Searching', selecting: 'Choosing a torrent', downloading: 'Downloading', complete: 'Ready to watch', failed: 'Needs attention' }[status] || status);
 const eta = seconds => seconds === null ? 'Calculating remaining time' : seconds === 0 ? 'Complete' : seconds < 60 ? 'Less than a minute left' : seconds < 3600 ? `${Math.ceil(seconds / 60)} min remaining` : `${(seconds / 3600).toFixed(1)} hr remaining`;
 async function renderDownloads() {
@@ -173,10 +175,42 @@ async function loadDownloads(silent = false) {
     document.querySelector('#downloads-content').innerHTML = `<div class="stats-row"><div class="stat-card">${icon('download', 22)}<strong>${active.length}</strong><span>On their way</span></div><div class="stat-card">${icon('check', 22)}<strong>${r.requests.filter(r => r.status === 'complete').length}</strong><span>Ready to watch</span></div><div class="stat-card">${icon('clock', 22)}<strong>${r.requests.filter(r => r.status === 'failed').length}</strong><span>Need attention</span></div></div>
     ${r.requests.length ? `<div class="download-list">${r.requests.map(r => `<article class="download-row"><div class="download-poster">${r.media.poster ? `<img src="${esc(r.media.poster)}" alt="">` : fallbackPoster(r.media)}</div><div class="download-info"><div class="download-title"><h2>${esc(r.media.title)}</h2><span class="status-badge status-${esc(r.status)}">${esc(statusLabel(r.status))}</span></div><p class="muted small">${esc(r.media.year)} · ${r.media.type === 'tv' ? 'TV show' : 'Movie'} · ${esc(r.media.rating)}</p><p class="download-message">${esc(r.message)}</p><progress max="1" value="${Math.min(1, Math.max(0, Number(r.progress)))}" aria-label="Download progress for ${esc(r.media.title)}"></progress><div class="progress-meta"><span>${Math.round(r.progress * 100)}%</span><span>${r.status === 'downloading' ? esc(eta(r.eta)) : r.status === 'complete' ? 'Added to your media folder' : `${r.torrents.length} selected torrent${r.torrents.length !== 1 ? 's' : ''}`}</span><span>${r.speed ? `${(r.speed / 1024 ** 2).toFixed(1)} MiB/s` : ''}</span></div>
     ${r.torrents.length ? `<details><summary>Download details</summary>${r.torrents.map(t => `<p class="torrent-detail">${esc(t.name)}${state.user.role === 'admin' ? `<small>${(t.size / 1024 ** 3).toFixed(2)} GiB · ${t.seeders} seeders · ${t.peers} peers</small>` : ''}</p>`).join('')}</details>` : ''}
-    ${r.email_status.some(e => e.status === 'failed') ? '<p class="form-error small">An email could not be delivered. An admin can retry it.</p>' : ''}</div>${state.user.role === 'admin' && r.status === 'failed' ? `<button class="button secondary retry-request" data-id="${r.id}">Retry</button>` : ''}</article>`).join('')}</div>` : `<div class="empty-state">${icon('download', 40)}<h2>A good story is on the horizon.</h2><p>Choose a movie or show in Discover. Your request will appear here.</p><button class="button primary" id="go-discover">Find something to watch ${icon('arrow')}</button></div>`}`;
+    ${r.email_status.some(e => e.status === 'failed') ? '<p class="form-error small">An email could not be delivered. An admin can retry it.</p>' : ''}</div>${state.user.role === 'admin' ? `<div class="download-actions"><button class="button secondary search-log" data-id="${r.id}">Search log</button>${r.status === 'failed' ? `<button class="button secondary retry-request" data-id="${r.id}">Retry</button>` : ''}</div>` : ''}</article>`).join('')}</div>` : `<div class="empty-state">${icon('download', 40)}<h2>A good story is on the horizon.</h2><p>Choose a movie or show in Discover. Your request will appear here.</p><button class="button primary" id="go-discover">Find something to watch ${icon('arrow')}</button></div>`}`;
     document.querySelector('#go-discover')?.addEventListener('click', () => navigate('discover'));
     document.querySelectorAll('.retry-request').forEach(button => button.addEventListener('click', async () => { button.disabled = true; try { const r = await api('admin-retry', { id: Number(button.dataset.id) }); toast(r.message); loadDownloads(); } catch (e) { toast(e.message, true); button.disabled = false; } }));
+    document.querySelectorAll('.search-log').forEach(button => button.addEventListener('click', () => openSearchLog(Number(button.dataset.id))));
   } catch (error) { if (!silent) toast(error.message, true); }
+}
+async function openSearchLog(id) {
+  if (state.user?.role !== 'admin') return;
+  const target = document.querySelector('#search-log-detail');
+  target.innerHTML = `<button class="dialog-close" data-close aria-label="Close">${icon('close')}</button><div class="search-log-content"><h2>Search log</h2><p class="muted">Loading search reports…</p></div>`;
+  bindClose(searchLogDialog); if (!searchLogDialog.open) searchLogDialog.showModal();
+  try {
+    const data = await api('admin-search-log', undefined, { id });
+    if (!searchLogDialog.open || state.user?.role !== 'admin') return;
+    const labels = { searching: 'Searching', reviewing: 'Reviewing candidates', selected: 'Selected', no_candidates: 'All results filtered out', no_selection: 'Model chose none', error: 'Error', expired: 'Search disappeared', restarted: 'Restarted' };
+    target.innerHTML = `<button class="dialog-close" data-close aria-label="Close">${icon('close')}</button><div class="search-log-content"><div class="section-heading"><div><span class="eyebrow">ADMIN SEARCH DIAGNOSTICS</span><h2>Request #${id}</h2></div><button class="button secondary" id="refresh-search-log">Refresh</button></div><p class="muted small">Newest first. Credentials and torrent links are excluded. Reports begin with this update.</p>${data.logs.length ? data.logs.map(log => {
+      const r = log.report, f = r.filters, d = r.decision;
+      const selected = new Set(r.outcome === 'selected' ? (d?.selected || []).map(s => s.candidate_id) : []);
+      const evaluations = new Map((d?.evaluations || []).map(e => [e.candidate_id, e]));
+      const outcome = row => {
+        if (selected.has(row.candidate_id)) return 'Selected and validated';
+        const evaluation = evaluations.get(row.candidate_id);
+        if (row.status === 'model' && evaluation) return evaluation.verdict === 'alternative' ? 'Eligible alternative; not chosen' : evaluation.verdict === 'selected' ? 'Model choice; see overall validation outcome' : 'Model rejected';
+        return row.reason;
+      };
+      return `<section class="search-log-report"><div class="download-title"><h3>${esc(labels[r.outcome] || r.outcome)}</h3><small>${esc(new Date(log.created_at * 1000).toLocaleString())}</small></div><p class="search-query"><strong>Query:</strong> ${esc(r.query)}</p><p class="muted small">${esc(r.media?.title)} · ${esc(r.media?.year)} · Original language: ${esc(r.media?.original_language || 'Unknown')} · Plugins: ${esc(r.plugins)}${r.wanted_seasons?.length ? ` · Seasons: ${esc(r.wanted_seasons.join(', '))}` : ''}</p><p>${esc(r.message)}</p>${r.total_found !== undefined ? `<p class="small">${Number(r.total_found)} results found${r.elapsed_seconds !== undefined ? ` after ${Number(r.elapsed_seconds)} seconds` : ''}.${f ? ` ${Number(f.received)} fetched; ${Number(f.sent_to_model)} eligible for model review.` : ''}</p>` : ''}${f && Number(r.total_found) > Number(f.received) ? '<p class="muted small">Only the first 500 results are fetched from qBittorrent.</p>' : ''}
+      ${f && Object.keys(f.reasons).length ? `<ul class="search-filter-counts">${Object.entries(f.reasons).map(([reason, count]) => `<li><strong>${Number(count)}</strong> ${esc(reason)}</li>`).join('')}</ul>` : ''}
+      ${d ? `<div class="search-decision"><strong>${d.model_called ? `Model explanation (${esc(d.model)})` : 'Model was not called'}</strong><p>${esc(d.summary || 'No explanation returned.')}</p>${d.audio_policy ? `<p class="small">Audio policy: ${esc(d.audio_policy)}</p>` : ''}${d.repair_reason ? `<p class="small">${esc(d.repair_reason)} Response attempts: ${Number(d.response_attempts)}.</p>` : ''}${d.selected.map(s => `<p class="small">${esc(s.quality)} · Confidence: ${Math.round(Number(s.confidence) * 100)}% · ${esc(s.reason)}</p>`).join('')}</div>` : ''}
+      ${f?.rows.length ? `<details><summary>View ${f.rows.length} torrent results and filter outcomes</summary><div class="table-wrap"><table><thead><tr><th>Torrent</th><th>Size / seeders</th><th>Outcome</th></tr></thead><tbody>${f.rows.map(row => { const evaluation = evaluations.get(row.candidate_id); return `<tr><td><strong>${esc(row.name || '(Unnamed)')}</strong><small>${esc(row.engine || 'Unknown plugin')} · ${esc(row.link_type)}</small></td><td>${(Number(row.size_bytes) / 1024 ** 3).toFixed(2)} GiB<small>${Number(row.seeders)} seeders</small></td><td>${esc(outcome(row))}${evaluation ? `<small>${esc(evaluation.reason)}</small>` : row.status === 'model' && d?.model_called && !selected.has(row.candidate_id) ? '<small>No candidate-specific reason returned; see explanation above.</small>' : ''}${row.note ? `<small>${esc(row.note)}</small>` : ''}</td></tr>`; }).join('')}</tbody></table></div></details>` : ''}</section>`;
+    }).join('') : '<div class="empty-state"><h3>No search report yet.</h3><p>Retry this request to capture the search results and selection explanation.</p></div>'}</div>`;
+    bindClose(searchLogDialog);
+    target.querySelector('#refresh-search-log').addEventListener('click', () => openSearchLog(id));
+  } catch (error) {
+    target.innerHTML = `<button class="dialog-close" data-close aria-label="Close">${icon('close')}</button><div class="search-log-content"><h2>Unable to load search log.</h2><p>${esc(error.message)}</p></div>`;
+    bindClose(searchLogDialog);
+  }
 }
 async function renderAdmin() {
   const page = document.querySelector('#page');
@@ -200,15 +234,15 @@ function renderAdminContent(data) {
   }
   if (state.adminTab === 'settings') {
     const groups = [
-      ['Catalog & selection', ['TMDB_READ_ACCESS_TOKEN', 'REGION', 'TIMEZONE', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'SELECTION_MIN_CONFIDENCE']],
+      ['Catalog & selection', ['TMDB_READ_ACCESS_TOKEN', 'REGION', 'TIMEZONE', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'SELECTION_MIN_CONFIDENCE', 'ASSUME_ORIGINAL_AUDIO']],
       ['Download connections', ['QBITTORRENT_URL', 'QBITTORRENT_USERNAME', 'QBITTORRENT_PASSWORD', 'QBITTORRENT_SEARCH_PLUGINS', 'TORRENT_ALLOWED_HOSTS', 'JELLYFIN_URL', 'JELLYFIN_API_KEY']],
-      ['Folders & quality', ['MOVIE_ROOT', 'TV_ROOT', 'MATURE_TV_ROOT', 'MATURE_RATINGS', 'UNKNOWN_RATING_MATURE', 'MOVIE_GENRE_MAP', 'MAX_TORRENT_GB', 'SEARCH_TIMEOUT']],
+      ['Folders & quality', ['MOVIE_ROOT', 'MOVIE_EXISTING_FOLDERS', 'ALLOW_NEW_MOVIE_FOLDERS', 'MOVIE_FOLDER_OVERRIDES', 'MOVIE_GENRE_MAP', 'TV_ROOT', 'MATURE_TV_ROOT', 'MATURE_RATINGS', 'UNKNOWN_RATING_MATURE', 'MAX_TORRENT_GB', 'TV_MAX_GIB_PER_HOUR', 'SEARCH_TIMEOUT']],
       ['Email notifications', ['DOWNLOAD_MANAGER_EMAIL', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_ENCRYPTION', 'MAIL_FROM_ADDRESS', 'MAIL_FROM_NAME']],
       ['Access & requests', ['REGISTRATION_OPEN', 'DOWNLOADS_ENABLED', 'REQUEST_LIMIT_PER_DAY']],
     ];
     const field = key => {
-      const f = data.settings.find(f => f.key === key); const booleans = ['REGISTRATION_OPEN', 'DOWNLOADS_ENABLED', 'UNKNOWN_RATING_MATURE'];
-      return `<label>${esc(f.label)}${f.secret ? `<span class="secret-state">${f.configured ? 'Configured · enter to replace' : 'Not configured'}</span><input name="${key}" type="password" autocomplete="new-password" placeholder="${f.configured ? 'Saved securely' : 'Enter credential'}" value="">` : booleans.includes(key) ? `<select name="${key}"><option value="true" ${f.value === 'true' ? 'selected' : ''}>Enabled</option><option value="false" ${f.value === 'false' ? 'selected' : ''}>Disabled</option></select>` : key === 'MOVIE_GENRE_MAP' ? `<textarea name="${key}" rows="3">${esc(f.value)}</textarea>` : `<input name="${key}" value="${esc(f.value)}" ${key.includes('EMAIL') || key === 'MAIL_FROM_ADDRESS' ? 'type="email"' : ''}>`}</label>`;
+      const f = data.settings.find(f => f.key === key); const booleans = ['REGISTRATION_OPEN', 'DOWNLOADS_ENABLED', 'UNKNOWN_RATING_MATURE', 'ALLOW_NEW_MOVIE_FOLDERS', 'ASSUME_ORIGINAL_AUDIO'];
+      return `<label>${esc(f.label)}${f.secret ? `<span class="secret-state">${f.configured ? 'Configured · enter to replace' : 'Not configured'}</span><input name="${key}" type="password" autocomplete="new-password" placeholder="${f.configured ? 'Saved securely' : 'Enter credential'}" value="">` : booleans.includes(key) ? `<select name="${key}"><option value="true" ${f.value === 'true' ? 'selected' : ''}>Enabled</option><option value="false" ${f.value === 'false' ? 'selected' : ''}>Disabled</option></select>` : ['MOVIE_GENRE_MAP', 'MOVIE_FOLDER_OVERRIDES', 'MOVIE_EXISTING_FOLDERS'].includes(key) ? `<textarea name="${key}" rows="3">${esc(f.value)}</textarea>` : `<input name="${key}" value="${esc(f.value)}" ${key.includes('EMAIL') || key === 'MAIL_FROM_ADDRESS' ? 'type="email"' : ''}>`}</label>`;
     };
     target.innerHTML = `${health}<form id="settings-form"><p class="muted small">Secret fields are never displayed. Leave them blank to keep the saved value.</p>${groups.map(([title, keys]) => `<section class="settings-section"><h2>${title}</h2><div class="settings-grid">${keys.map(field).join('')}</div></section>`).join('')}<div class="settings-save"><button class="button primary" type="submit">Save settings ${icon('check', 18)}</button></div></form>`;
     document.querySelector('#settings-form').addEventListener('submit', async event => { event.preventDefault(); const button = event.currentTarget.querySelector('button[type=submit]'); button.disabled = true; try { const r = await api('admin-settings', { settings: Object.fromEntries(new FormData(event.currentTarget)) }); toast(r.message); renderAdmin(); } catch (e) { toast(e.message, true); button.disabled = false; } });

@@ -55,6 +55,28 @@ final class TorrentPolicy
         }
         return true;
     }
+    public static function normalizeMagnet(string $url,array &$trackerChecks=[]): ?array
+    {
+        if(strlen($url)>6000 || preg_match('/[\x00-\x1f\x7f]/',$url)) return null;
+        $hash=self::magnetHash($url);
+        if(!$hash) return null;
+        parse_str((string)parse_url($url,PHP_URL_QUERY),$parts);
+        // Build a fresh link from the verified hash. Optional source URLs are never forwarded.
+        $clean='magnet:?xt=urn:btih:'.$hash; $kept=[]; $removed=0;
+        $trackers=$parts['tr'] ?? [];
+        foreach(is_array($trackers) ? $trackers : [$trackers] as $tracker) {
+            if(!is_string($tracker) || strlen($tracker)>2000) { $removed++; continue; }
+            if(!array_key_exists($tracker,$trackerChecks)) $trackerChecks[$tracker]=self::urlAllowed('magnet:?xt=urn:btih:'.$hash.'&tr='.rawurlencode($tracker),'');
+            if(!$trackerChecks[$tracker]) { $removed++; continue; }
+            $kept[$tracker]=true;
+        }
+        foreach(array_keys($kept) as $tracker) $clean.='&tr='.rawurlencode($tracker);
+        $notes=[];
+        if($removed) $notes[]='Removed '.$removed.' unsafe or unreachable tracker'.($removed===1 ? '' : 's');
+        if(isset($parts['xs']) || isset($parts['as']) || isset($parts['ws'])) $notes[]='Removed optional source URLs';
+        if(!$kept && $removed) $notes[]='Valid info hash retained; peers must be found through DHT or peer exchange';
+        return ['url'=>$clean,'note'=>implode('. ',$notes)];
+    }
     private static function titleMatches(string $name,array $media): bool
     {
         $normalize=static function(string $s): string {
@@ -71,38 +93,54 @@ final class TorrentPolicy
     }
     private static function provenSeasons(string $name,array $media,array $claimed): bool
     {
-        $found=[];
-        if(preg_match_all('/\bS(\d{1,2})\s*[-–]\s*S?(\d{1,2})\b/i',$name,$ranges,PREG_SET_ORDER)) {
-            foreach($ranges as $r) { if((int)$r[2]<(int)$r[1] || (int)$r[2]-(int)$r[1]>50) return false; $found=array_merge($found,range((int)$r[1],(int)$r[2])); }
-        }
-        if(preg_match_all('/\bSeasons?\s+(\d{1,2})\s*[-–]\s*(\d{1,2})\b/i',$name,$ranges,PREG_SET_ORDER)) {
-            foreach($ranges as $r) { if((int)$r[2]<(int)$r[1] || (int)$r[2]-(int)$r[1]>50) return false; $found=array_merge($found,range((int)$r[1],(int)$r[2])); }
-        }
-        if(preg_match_all('/\bS(\d{1,2})(?!\d|E\d)/i',$name,$matches)) $found=array_merge($found,array_map('intval',$matches[1]));
-        if(preg_match_all('/\bSeason\s+(\d{1,2})\b/i',$name,$matches)) $found=array_merge($found,array_map('intval',$matches[1]));
-        $found=array_values(array_unique($found)); sort($found); sort($claimed);
-        if($found) return $found===$claimed;
-        // A generic "complete series" claim is accepted only for an ended show and all known numbered seasons.
-        if(!in_array($media['status'] ?? '',['Ended','Canceled'],true) || !preg_match('/\b(?:complete\s+series|all\s+seasons)\b/i',$name)) return false;
-        $all=[]; foreach($media['seasons'] ?? [] as $s) if(($s['season_number'] ?? 0)>0) $all[]=(int)$s['season_number'];
-        sort($all); return $all && $all===$claimed;
+        $e=CandidateEvidence::seasons($name,$media); sort($claimed);
+        return $e['valid'] && !$e['single_episode'] && $e['seasons'] && $e['seasons']===$claimed;
     }
-    public static function candidates(array $results,int $limit,Settings $settings): array
+    public static function candidates(array $results,int $limit,Settings $settings,?array &$diagnostics=null,?array $media=null,array $seasons=[],bool $allOnly=false): array
     {
         usort($results,fn($a,$b)=>(int)($b['nbSeeders'] ?? 0)<=>(int)($a['nbSeeders'] ?? 0));
-        $out=[]; $seen=[];
+        $out=[]; $seen=[]; $rows=[]; $reasons=[]; $trackerChecks=[];
         foreach($results as $r) {
             $name=mb_substr((string)($r['fileName'] ?? ''),0,400);
             $url=(string)($r['fileUrl'] ?? ''); $hash=self::magnetHash($url); $key=$hash ?? hash('sha256',$url);
             $size=(float)($r['fileSize'] ?? 0);
-            if(!$name || isset($seen[$key]) || $size<=0 || $size>(float)$settings->get('MAX_TORRENT_GB')*1024**3 || (int)($r['nbSeeders'] ?? 0)<1) continue;
-            if(preg_match('/\b(hd[ ._-]?cam|hd[ ._-]?ts|camrip|telesync|telecine|hd[ ._-]?tc|dvdscr|screener|workprint|cam|ts|tc)\b/i',$name)) continue;
-            if(!self::urlAllowed($url,$settings->get('TORRENT_ALLOWED_HOSTS'))) continue;
+            $reason=''; $status='filtered'; $note=''; $evidence=$media ? CandidateEvidence::inspect($name,$media,$seasons,$settings) : null;
+            if(!$name) $reason='Missing torrent name';
+            elseif(isset($seen[$key])) $reason='Duplicate torrent';
+            elseif($size<=0) $reason='Missing or invalid torrent size';
+            elseif($size>(float)$settings->get('MAX_TORRENT_GB')*1024**3) $reason='Exceeds maximum torrent size';
+            elseif((int)($r['nbSeeders'] ?? 0)<1) $reason='No reported seeders';
+            elseif(preg_match('/\b(hd[ ._-]?cam|hd[ ._-]?ts|camrip|telesync|telecine|hd[ ._-]?tc|dvdscr|screener|workprint|cam|ts|tc)\b/i',$name)) $reason='Theater recording, screener, or workprint';
+            elseif($media && !self::titleMatches($name,$media)) $reason='Title does not match requested media';
+            elseif($media && !$evidence['audio']['allowed']) $reason=$evidence['audio']['note'];
+            elseif($media && !in_array($evidence['quality'],$media['type']==='movie' ? ['1080p','2160p'] : ['1080p','720p'],true)) $reason='Resolution is missing or outside the allowed quality policy';
+            elseif($media && $media['type']==='tv' && !self::provenSeasons($name,$media,array_column($seasons,'number'))) $reason=$evidence['coverage']['single_episode'] ? 'Single-episode torrent, not a complete season pack' : 'Season coverage does not match this search';
+            elseif($media && $media['type']==='tv' && $evidence['max_size_gib']!==null && $size/1024**3>$evidence['max_size_gib']) $reason='Exceeds TV size budget for episode count and runtime';
+            elseif(count($out)>=$limit) { $reason='Not reviewed: model candidate limit reached'; $status='not_reviewed'; }
+            else {
+                if(str_starts_with(strtolower($url),'magnet:')) {
+                    $magnet=self::normalizeMagnet($url,$trackerChecks);
+                    if($magnet) { $url=$magnet['url']; $note=$magnet['note']; }
+                    else $reason='Invalid magnet info hash or malformed link';
+                }
+                if($reason==='' && !self::urlAllowed($url,$settings->get('TORRENT_ALLOWED_HOSTS'))) {
+                    $reason=str_starts_with(strtolower($url),'http://') ? 'HTTP torrent link: HTTPS or a valid magnet is required' : 'Torrent-file link is unsupported, not allowlisted, or failed public-network checks';
+                }
+            }
+            $row=['name'=>$name,'size_bytes'=>(int)$size,'seeders'=>max(0,(int)($r['nbSeeders'] ?? 0)),
+                'engine'=>mb_substr((string)($r['engineName'] ?? ''),0,80),'link_type'=>str_starts_with(strtolower($url),'magnet:') ? 'Magnet' : (str_starts_with(strtolower($url),'https://') ? 'HTTPS file' : (str_starts_with(strtolower($url),'http://') ? 'HTTP file' : 'Other'))];
+            if($reason!=='') { $rows[]=$row+['status'=>$status,'reason'=>$reason]; $reasons[$reason]=($reasons[$reason] ?? 0)+1; continue; }
             $seen[$key]=true;
+            if($evidence) {
+                $note=trim($note.($note ? '. ' : '').$evidence['audio']['note']);
+                if($evidence['episode_count']>0) $evidence['gib_per_episode']=round($size/1024**3/$evidence['episode_count'],3);
+            }
             $out[]=['id'=>'t_'.substr(hash('sha256',$key),0,16),'name'=>$name,'size_bytes'=>(int)$size,
-                'seeders'=>(int)$r['nbSeeders'],'peers'=>max(0,(int)($r['nbLeechers'] ?? 0)),'url'=>$url,'hash'=>$hash];
-            if(count($out)>=$limit) break;
+                'seeders'=>(int)$r['nbSeeders'],'peers'=>max(0,(int)($r['nbLeechers'] ?? 0)),'url'=>$url,'hash'=>$hash]+($evidence ? ['evidence'=>$evidence] : []);
+            $rows[]=$row+['status'=>'model','reason'=>'Sent to model','candidate_id'=>$out[array_key_last($out)]['id'],'note'=>$note];
+            if($diagnostics===null && count($out)>=$limit) break;
         }
+        $diagnostics=['received'=>count($results),'sent_to_model'=>count($out),'reasons'=>$reasons,'rows'=>$rows];
         return $out;
     }
     public static function validate(array $selection,array $candidates,array $media,array $wanted,Settings $settings,bool $allOnly): array
@@ -116,9 +154,11 @@ final class TorrentPolicy
             if(!isset($byId[$id]) || isset($ids[$id])) throw new \RuntimeException('The model chose an unknown or duplicate torrent.');
             $ids[$id]=true; $candidate=$byId[$id];
             if(!self::titleMatches($candidate['name'],$media)) throw new \RuntimeException('Torrent title does not match the requested movie or show.');
+            if(!CandidateEvidence::audio($candidate['name'],$media,$settings)['allowed']) throw new \RuntimeException('Torrent audio language conflicts with the configured policy.');
             if(($s['correct_title'] ?? false)!==true || ($s['language_ok'] ?? false)!==true || ($s['theater_recording'] ?? true)!==false
                 || (float)($s['confidence'] ?? 0)<(float)$settings->get('SELECTION_MIN_CONFIDENCE')) throw new \RuntimeException('Torrent selection did not meet the required confidence or language rules.');
             $quality=$s['quality'] ?? '';
+            if($media['type']==='tv' && isset($candidate['evidence']['max_size_gib']) && $candidate['size_bytes']/1024**3>$candidate['evidence']['max_size_gib']) throw new \RuntimeException('TV torrent exceeds the size budget for its episodes and runtime.');
             if(!in_array($quality,$media['type']==='movie' ? ['1080p','2160p'] : ['1080p','720p'],true)) throw new \RuntimeException('Torrent quality did not meet the configured policy.');
             $title=$candidate['name'];
             if(!preg_match('/(?<!\d)'.($quality==='2160p' ? '(?:2160p|4k)' : preg_quote($quality,'/')).'(?!\d)/i',$title)) throw new \RuntimeException('Torrent title does not support its reported resolution.');

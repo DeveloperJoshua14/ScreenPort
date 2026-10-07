@@ -13,13 +13,14 @@ if(!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS']!=='off') header('Strict-Transp
   <meta name="description" content="ScreenPort — your private movie and TV request library.">
   <title>ScreenPort</title>
   <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-  <link rel="stylesheet" href="/assets/app.css">
-  <script src="/assets/app.js" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=selection2">
+  <script src="/assets/app.js?v=selection2" defer></script>
 </head>
 <body>
   <div id="app"><div class="boot"><span class="brand-mark">S</span><p>Opening ScreenPort…</p></div></div>
   <div id="toast" role="status" aria-live="polite"></div>
   <dialog id="media-dialog" aria-label="Media details"><div id="media-detail"></div></dialog>
   <dialog id="account-dialog" aria-label="Account settings"><div id="account-detail"></div></dialog>
+  <dialog id="search-log-dialog" aria-label="Search diagnostics"><div id="search-log-detail"></div></dialog>
 </body>
 </html>

@@ -68,6 +68,7 @@ final class Requests
             // Retain the original plan and torrent records: retry reconciles uncertain adds before trying again.
             $job=$this->db->one("SELECT * FROM jobs WHERE request_id=? AND kind='acquire'",[$id]);
             $payload=json_decode($job['payload'] ?? '{}',true) ?: [];
+            unset($payload['search_restarts']);
             if(!empty($payload['search_id'])) $payload['restart_search']=true;
             $this->db->run("UPDATE requests SET status='queued',message='Retry scheduled by admin',updated_at=? WHERE id=?",[time(),$id]);
             $this->db->run("UPDATE jobs SET status='pending',attempts=0,last_error=NULL,due_at=?,payload=? WHERE id=?",[time(),json_encode($payload,JSON_THROW_ON_ERROR),$job['id']]);
