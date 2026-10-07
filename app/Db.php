@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS search_logs (
  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, report TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS search_logs_request ON search_logs(request_id,id DESC);
+CREATE TABLE IF NOT EXISTS request_controls (
+ request_id INTEGER PRIMARY KEY REFERENCES requests(id), action TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+ previous_status TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', generation INTEGER NOT NULL DEFAULT 1,
+ attempts INTEGER NOT NULL DEFAULT 0, due_at INTEGER NOT NULL, last_error TEXT
+);
 SQL);
     }
     public function run(string $sql, array $params=[]): \PDOStatement { $s=$this->pdo->prepare($sql); $s->execute($params); return $s; }

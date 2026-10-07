@@ -15,12 +15,16 @@ final class Worker
         $this->db->run("INSERT INTO cache VALUES('worker_heartbeat',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,expires_at=excluded.expires_at",[json_encode(time()),time()+300]);
         $this->db->run("UPDATE jobs SET status='pending' WHERE status='running'");
         $this->settings->reload(); $count=0;
+        $controls=new RequestControls($this->config,$this->db,$this->settings);
+        $controls->process();
         // Deliver account/intake alerts before potentially slow acquisition jobs.
         (new ManagerAlerts($this->config,$this->db,$this->settings,$this->testDelivery))->deliver();
-        $jobs=$this->db->all("SELECT * FROM jobs WHERE status='pending' AND due_at<=? ORDER BY CASE kind WHEN 'notify' THEN 0 WHEN 'monitor' THEN 1 ELSE 2 END,due_at LIMIT 25",[time()]);
+        $jobs=$this->db->all("SELECT * FROM jobs WHERE status='pending' AND due_at<=? AND NOT EXISTS(SELECT 1 FROM request_controls c WHERE c.request_id=jobs.request_id) ORDER BY CASE kind WHEN 'notify' THEN 0 WHEN 'monitor' THEN 1 ELSE 2 END,due_at LIMIT 25",[time()]);
         foreach($jobs as $job) {
-            $this->db->run("UPDATE jobs SET status='running' WHERE id=?",[$job['id']]);
+            $claimed=$this->db->run("UPDATE jobs SET status='running' WHERE id=? AND status='pending' AND NOT EXISTS(SELECT 1 FROM request_controls c WHERE c.request_id=jobs.request_id)",[$job['id']]);
+            if(!$claimed->rowCount()) continue;
             try {
+                $controls->assertActive((int)$job['request_id']);
                 $this->qbit=new Qbit($this->settings,$this->config);
                 match($job['kind']) {
                     'acquire'=>$this->acquire($job), 'notify'=>$this->notify($job), 'monitor'=>$this->monitor($job),
@@ -31,6 +35,10 @@ final class Worker
                 $message=$e instanceof \JsonException ? 'A service returned invalid data.' : $this->safeMessage($e);
                 $terminal=$attempts>=3;
                 $this->db->transaction(function() use($job,$terminal,$attempts,$message) {
+                    if($this->db->one('SELECT request_id FROM request_controls WHERE request_id=?',[$job['request_id']])) {
+                        $this->db->run("UPDATE jobs SET status='pending' WHERE id=? AND status='running'",[$job['id']]);
+                        return; // Admin suspension/removal wins over in-flight errors and automatic retries.
+                    }
                     $this->db->run('UPDATE jobs SET status=?,attempts=?,last_error=?,due_at=? WHERE id=?',[$terminal ? 'failed' : 'pending',$attempts,$message,time()+min(900,30*2**$attempts),$job['id']]);
                     if($job['kind']==='acquire') {
                         $this->state((int)$job['request_id'],$terminal ? 'failed' : 'queued',$message.($terminal ? ' Admin review is required.' : ' Retrying shortly.'));
@@ -40,6 +48,7 @@ final class Worker
                     $this->db->audit(null,'worker_error',$job['kind'].' request '.$job['request_id'].': '.$message);
                 });
             }
+            $controls->process();
             $count++;
         }
         $this->sendPendingEmails();
@@ -55,7 +64,7 @@ final class Worker
         if($e instanceof \RuntimeException && str_starts_with($e->getFile(),__DIR__) && !($e instanceof \PDOException)) return mb_substr($e->getMessage(),0,300);
         return 'The background task encountered an error. Check configuration and service connectivity.';
     }
-    private function state(int $rid,string $status,string $message): void { $this->db->run('UPDATE requests SET status=?,message=?,updated_at=? WHERE id=?',[$status,$message,time(),$rid]); }
+    private function state(int $rid,string $status,string $message): void { $this->db->run('UPDATE requests SET status=?,message=?,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM request_controls c WHERE c.request_id=requests.id)',[$status,$message,time(),$rid]); }
     private function pending(array $job,array $payload,int $delay=0): void { $this->db->run("UPDATE jobs SET status='pending',payload=?,due_at=?,attempts=CASE WHEN kind='acquire' THEN attempts ELSE 0 END,last_error=NULL WHERE id=?",[json_encode($payload,JSON_THROW_ON_ERROR),time()+$delay,$job['id']]); }
     private function done(array $job): void { $this->db->run("UPDATE jobs SET status='done',last_error=NULL WHERE id=?",[$job['id']]); }
     private function schedule(int $rid,string $kind,int $due): void
@@ -93,6 +102,7 @@ final class Worker
             'media'=>array_intersect_key($p['media'],array_flip(['title','original_title','type','year','original_language','runtime'])),
             'wanted_seasons'=>array_column($wanted,'number'),'outcome'=>'searching','message'=>'Waiting for qBittorrent results.'];
         if(empty($p['search_id'])) {
+            (new RequestControls($this->config,$this->db,$this->settings))->assertActive($rid);
             if((int)($p['search_restarts'] ?? 0)>2) throw new \RuntimeException('qBittorrent repeatedly lost its search job. Check server restarts, session timeout, and proxy routing before retrying.');
             $p['search_id']=$this->qbit->startSearch($pattern); $p['started_at']=time();
             $p['search_log_id']=$logs->begin($rid,$logInfo+['search_id'=>$p['search_id']]);
@@ -129,6 +139,7 @@ final class Worker
         $this->state($rid,'selecting','Comparing identity, language, quality, and size');
         $decision=[];
         try {
+            (new RequestControls($this->config,$this->db,$this->settings))->assertActive($rid);
             $picked=(new Selector($this->settings))->select($p['media'],$candidates,$wanted,$p['phase']==='series',$decision);
         } catch(\Throwable $e) {
             $logs->update((int)$p['search_log_id'],['decision'=>$decision,'outcome'=>'error','message'=>$this->safeMessage($e)]);
@@ -158,6 +169,7 @@ final class Worker
         if(!$fresh['available']) throw new \RuntimeException('Release verification failed before adding torrents.');
         $path=MediaRules::path($fresh,(bool)$plan['separate'],$this->settings);
         foreach($plan['picks'] as $c) {
+            (new RequestControls($this->config,$this->db,$this->settings))->assertActive($rid);
             if(!TorrentPolicy::urlAllowed($c['url'],$this->settings->get('TORRENT_ALLOWED_HOSTS'))) throw new \RuntimeException('A selected torrent URL no longer meets the allowed-host policy.');
             $tag='ScreenPort-'.$rid.'-'.$c['id'];
             $this->db->run('INSERT OR IGNORE INTO torrents(request_id,candidate_id,name,url,hash,tag,save_path,seasons) VALUES(?,?,?,?,?,?,?,?)',[$rid,$c['id'],$c['name'],$c['url'],$c['hash'],$tag,$path,json_encode($c['seasons'])]);
@@ -181,6 +193,7 @@ final class Worker
             if($t['state']==='adding') throw new \RuntimeException('A previous torrent add could not be confirmed. Inspect qBittorrent before retrying.');
             // Re-evaluate a persisted but unsubmitted plan against current folder rules.
             $t['save_path']=$path;
+            (new RequestControls($this->config,$this->db,$this->settings))->assertActive($rid);
             $this->db->run("UPDATE torrents SET state='adding',save_path=?,added_at=? WHERE id=?",[$path,time(),$t['id']]);
             $this->qbit->add($t,$fresh['type']);
             $this->db->transaction(function() use($t,$fresh,$rid) {
@@ -236,7 +249,8 @@ final class Worker
     }
     private function sendPendingEmails(): void
     {
-        foreach($this->db->all("SELECT * FROM emails WHERE status='pending' AND due_at<=? LIMIT 25",[time()]) as $e) {
+        foreach($this->db->all("SELECT * FROM emails WHERE status='pending' AND due_at<=? AND NOT EXISTS(SELECT 1 FROM request_controls c WHERE c.request_id=emails.request_id) LIMIT 25",[time()]) as $e) {
+            if($this->db->one('SELECT request_id FROM request_controls WHERE request_id=?',[$e['request_id']])) continue;
             try {
                 $r=$this->db->one('SELECT media FROM requests WHERE id=?',[$e['request_id']]);
                 $torrents=$this->db->all('SELECT * FROM torrents WHERE request_id=?',[$e['request_id']]);

@@ -83,6 +83,33 @@ final class Qbit
     public function deleteSearch(int $id): void { $this->call('search/delete',['id'=>$id],true,false); }
     public function tagged(string $tag): array { return $this->call('torrents/info',['tag'=>$tag]); }
     public function hashes(array $hashes): array { return $hashes ? $this->call('torrents/info',['hashes'=>implode('|',$hashes)]) : []; }
+    private function controlHashes(array $hashes): string
+    {
+        foreach($hashes as $hash) if(!is_string($hash) || !preg_match('/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i',$hash)) throw new \RuntimeException('Invalid torrent identity for download control.');
+        return implode('|',array_unique($hashes));
+    }
+    public function stop(array $hashes): void
+    {
+        if(!$hashes) return;
+        $ids=$this->controlHashes($hashes);
+        try { $this->call('torrents/stop',['hashes'=>$ids],true,false); }
+        catch(\RuntimeException $e) { if($e->getCode()!==404) throw $e; $this->call('torrents/pause',['hashes'=>$ids],true,false); }
+    }
+    public function start(array $hashes): void
+    {
+        if(!$hashes) return;
+        $ids=$this->controlHashes($hashes);
+        try { $this->call('torrents/start',['hashes'=>$ids],true,false); }
+        catch(\RuntimeException $e) { if($e->getCode()!==404) throw $e; $this->call('torrents/resume',['hashes'=>$ids],true,false); }
+    }
+    public function remove(array $hashes): void
+    {
+        if($hashes) $this->call('torrents/delete',['hashes'=>$this->controlHashes($hashes),'deleteFiles'=>'false'],true,false);
+    }
+    public function untag(string $hash,string $tag): void
+    {
+        $this->call('torrents/removeTags',['hashes'=>$this->controlHashes([$hash]),'tags'=>$tag],true,false);
+    }
     public function add(array $torrent,string $type): void
     {
         // Exact save path wins over category rules because automatic management is disabled.

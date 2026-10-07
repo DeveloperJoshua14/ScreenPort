@@ -2,7 +2,7 @@ const app = document.querySelector('#app');
 const dialog = document.querySelector('#media-dialog');
 const accountDialog = document.querySelector('#account-dialog');
 const searchLogDialog = document.querySelector('#search-log-dialog');
-const state = { user: null, csrf: '', view: 'discover', type: 'movie', query: '', page: 1, totalPages: 1, media: [], downloads: [], adminTab: 'accounts', demo: false, catalogReady: false, busy: false };
+const state = { user: null, csrf: '', view: 'discover', type: 'movie', query: '', page: 1, totalPages: 1, media: [], downloads: [], adminTab: 'accounts', demo: false, catalogReady: false, busy: false, showRemoved: false };
 let catalogVersion = 0, downloadTimer, toastTimer;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = (name, size = 20) => {
@@ -189,23 +189,38 @@ function bindClose(target) { target.querySelectorAll('[data-close]').forEach(but
 dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
 accountDialog.addEventListener('click', event => { if (event.target === accountDialog) accountDialog.close(); });
 searchLogDialog.addEventListener('click', event => { if (event.target === searchLogDialog) searchLogDialog.close(); });
-const statusLabel = status => ({ queued: 'Queued', searching: 'Searching', selecting: 'Choosing a torrent', downloading: 'Downloading', complete: 'Ready to watch', failed: 'Needs attention' }[status] || status);
+const statusLabel = status => ({ queued: 'Queued', searching: 'Searching', selecting: 'Choosing a torrent', downloading: 'Downloading', complete: 'Ready to watch', failed: 'Needs attention', suspending: 'Suspending', suspended: 'Suspended', resuming: 'Resuming', removing: 'Removing', removed: 'Removed' }[status] || status);
 const eta = seconds => seconds === null ? 'Calculating remaining time' : seconds === 0 ? 'Complete' : seconds < 60 ? 'Less than a minute left' : seconds < 3600 ? `${Math.ceil(seconds / 60)} min remaining` : `${(seconds / 3600).toFixed(1)} hr remaining`;
+function downloadControls(r) {
+  if (state.user?.role !== 'admin') return '';
+  const button = (command, label, danger = false) => `<button class="button secondary download-control ${danger ? 'danger' : ''}" data-id="${r.id}" data-command="${command}">${label}</button>`;
+  return `<div class="download-actions"><button class="button secondary search-log" data-id="${r.id}">Search log</button>${r.status === 'failed' ? `<button class="button secondary retry-request" data-id="${r.id}">Retry</button>` : ''}${r.status === 'removed' ? button('restore', 'Restore request') : r.status === 'removing' ? '<span class="muted small">Removal queued</span>' : `${r.status === 'suspended' ? button('resume', 'Resume') : ['queued', 'searching', 'selecting', 'downloading', 'failed'].includes(r.status) ? button('suspend', 'Suspend') : ''}${button('remove', 'Remove request', true)}`}</div>`;
+}
 async function renderDownloads() {
-  document.querySelector('#page').innerHTML = `<div class="page-heading"><div><span class="eyebrow">ON THE WAY TO YOUR LIBRARY</span><h1>Your next movie night.</h1><p>${state.user.role === 'admin' ? 'All library requests and their progress.' : 'Your requests, from the first search to the final frame.'}</p></div><button class="button secondary" id="refresh-downloads">Refresh ${icon('arrow', 16)}</button></div><div id="downloads-content"><div class="loading-row"><span class="spinner"></span> Loading your requests…</div></div>`;
-  document.querySelector('#refresh-downloads').addEventListener('click', () => loadDownloads()); await loadDownloads();
+  document.querySelector('#page').innerHTML = `<div class="page-heading"><div><span class="eyebrow">ON THE WAY TO YOUR LIBRARY</span><h1>Your next movie night.</h1><p>${state.user.role === 'admin' ? 'All library requests and their progress.' : 'Your requests, from the first search to the final frame.'}</p></div><button class="button secondary" id="refresh-downloads">Refresh ${icon('arrow', 16)}</button></div>${state.user.role === 'admin' ? `<label class="removed-toggle"><input id="show-removed" type="checkbox" ${state.showRemoved ? 'checked' : ''}> Show removed requests</label>` : ''}<div id="downloads-content"><div class="loading-row"><span class="spinner"></span> Loading your requests…</div></div>`;
+  document.querySelector('#refresh-downloads').addEventListener('click', () => loadDownloads());
+  document.querySelector('#show-removed')?.addEventListener('change', event => { state.showRemoved = event.target.checked; loadDownloads(); });
+  await loadDownloads();
 }
 async function loadDownloads(silent = false) {
   try {
-    const r = await api('downloads'); if (state.view !== 'downloads') return; state.downloads = r.requests;
-    const active = r.requests.filter(r => !['complete', 'failed'].includes(r.status));
+    const r = await api('downloads', undefined, state.user.role === 'admin' && state.showRemoved ? { include_removed: 1 } : {}); if (state.view !== 'downloads') return; state.downloads = r.requests;
+    const active = r.requests.filter(r => ['queued', 'searching', 'selecting', 'downloading'].includes(r.status));
     const count = document.querySelector('#download-count'); count.hidden = !active.length; count.textContent = active.length;
     document.querySelector('#downloads-content').innerHTML = `<div class="stats-row"><div class="stat-card">${icon('download', 22)}<strong>${active.length}</strong><span>On their way</span></div><div class="stat-card">${icon('check', 22)}<strong>${r.requests.filter(r => r.status === 'complete').length}</strong><span>Ready to watch</span></div><div class="stat-card">${icon('clock', 22)}<strong>${r.requests.filter(r => r.status === 'failed').length}</strong><span>Need attention</span></div></div>
     ${r.requests.length ? `<div class="download-list">${r.requests.map(r => `<article class="download-row"><div class="download-poster">${r.media.poster ? `<img src="${esc(r.media.poster)}" alt="">` : fallbackPoster(r.media)}</div><div class="download-info"><div class="download-title"><h2>${esc(r.media.title)}</h2><span class="status-badge status-${esc(r.status)}">${esc(statusLabel(r.status))}</span></div><p class="muted small">${esc(r.media.year)} · ${r.media.type === 'tv' ? 'TV show' : 'Movie'} · ${esc(r.media.rating)}</p><p class="download-message">${esc(r.message)}</p><progress max="1" value="${Math.min(1, Math.max(0, Number(r.progress)))}" aria-label="Download progress for ${esc(r.media.title)}"></progress><div class="progress-meta"><span>${Math.round(r.progress * 100)}%</span><span>${r.status === 'downloading' ? esc(eta(r.eta)) : r.status === 'complete' ? 'Added to your media folder' : `${r.torrents.length} selected torrent${r.torrents.length !== 1 ? 's' : ''}`}</span><span>${r.speed ? `${(r.speed / 1024 ** 2).toFixed(1)} MiB/s` : ''}</span></div>
     ${r.torrents.length ? `<details><summary>Download details</summary>${r.torrents.map(t => `<p class="torrent-detail">${esc(t.name)}${state.user.role === 'admin' ? `<small>${(t.size / 1024 ** 3).toFixed(2)} GiB · ${t.seeders} seeders · ${t.peers} peers</small>` : ''}</p>`).join('')}</details>` : ''}
-    ${r.email_status.some(e => e.status === 'failed') ? '<p class="form-error small">An email could not be delivered. An admin can retry it.</p>' : ''}</div>${state.user.role === 'admin' ? `<div class="download-actions"><button class="button secondary search-log" data-id="${r.id}">Search log</button>${r.status === 'failed' ? `<button class="button secondary retry-request" data-id="${r.id}">Retry</button>` : ''}</div>` : ''}</article>`).join('')}</div>` : `<div class="empty-state">${icon('download', 40)}<h2>A good story is on the horizon.</h2><p>Choose a movie or show in Discover. Your request will appear here.</p><button class="button primary" id="go-discover">Find something to watch ${icon('arrow')}</button></div>`}`;
+    ${r.email_status.some(e => e.status === 'failed') ? '<p class="form-error small">An email could not be delivered. An admin can retry it.</p>' : ''}</div>${downloadControls(r)}</article>`).join('')}</div>` : `<div class="empty-state">${icon('download', 40)}<h2>A good story is on the horizon.</h2><p>Choose a movie or show in Discover. Your request will appear here.</p><button class="button primary" id="go-discover">Find something to watch ${icon('arrow')}</button></div>`}`;
     document.querySelector('#go-discover')?.addEventListener('click', () => navigate('discover'));
     document.querySelectorAll('.retry-request').forEach(button => button.addEventListener('click', async () => { button.disabled = true; try { const r = await api('admin-retry', { id: Number(button.dataset.id) }); toast(r.message); loadDownloads(); } catch (e) { toast(e.message, true); button.disabled = false; } }));
+    document.querySelectorAll('.download-control').forEach(button => button.addEventListener('click', async () => {
+      const command = button.dataset.command;
+      const request = state.downloads.find(r => r.id === Number(button.dataset.id));
+      if (command === 'remove' && !window.confirm(`Remove “${request?.media.title || 'this request'}” for all users? Its linked torrent entries will be removed from qBittorrent, except torrents shared with other requests. Downloaded files will be kept. Only an admin can restore the request.`)) return;
+      button.disabled = true;
+      try { const r = await api('admin-download-control', { id: Number(button.dataset.id), command }); toast(r.message); await loadDownloads(); }
+      catch (error) { toast(error.message, true); button.disabled = false; }
+    }));
     document.querySelectorAll('.search-log').forEach(button => button.addEventListener('click', () => openSearchLog(Number(button.dataset.id))));
   } catch (error) { if (!silent) toast(error.message, true); }
 }

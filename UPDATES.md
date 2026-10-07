@@ -30,3 +30,12 @@ All update ZIPs exclude the real `.env` and private storage. Installing an updat
 - Manual review freshly verifies the library match and queues a download-manager email with media/Jellyfin information and the requester's username, email, account ID, and role. The requester gets an email confirming that review was requested.
 - Reviews use private durable storage and email retries, suppress repeated clicks for 24 hours, and create no download jobs. The download API blocks detected movies and shows from bypassing the review flow.
 - New simulated integration, renderer, and real localhost HTTP tests cover library links, both email audiences, escaped media text, authenticated requester identity, duplicate suppression, and recipient-preserving email retry.
+
+## Admin download controls
+
+- Admin-only **Suspend**, **Resume**, and **Remove request** buttons on Downloads, including failed acquisition requests.
+- Suspension holds background jobs/retries and request emails, stops unshared linked torrents, and remains in effect across worker restarts. Resume preserves prior external pauses; failed requests still need Retry.
+- Removal deletes linked unshared torrent entries while keeping downloaded files, cancels jobs/emails, hides the request, and preserves a record preventing members from restarting it. Shared or untagged external torrents are preserved.
+- **Show removed requests** and **Restore request** let admins review removed history and explicitly restore a request for later Retry.
+- Durable queued commands and worker checkpoints handle in-flight adds, service failures, and superseding commands. Pending failures remain blocked and retry with backoff. qBittorrent 4.x and 5.x controls are supported.
+- Simulated worker/integration tests, real isolated HTTP access-control tests, and UI tests verify admin access, confirmation, request lifecycle, search cleanup, retry behavior, and file preservation.

@@ -9,10 +9,11 @@ final class Requests
     {
         if(!in_array($type,['movie','tv'],true) || $id<1) throw new ApiError('Invalid media request.',422);
         if($this->config->demo()) throw new ApiError('Preview mode cannot start real downloads.',403);
+        $this->checkControl($type,$id);
         $media=null;
         try { return $this->submit($user,$type,$id,$media); }
         catch(\Throwable $error) {
-            (new ManagerAlerts($this->config,$this->db,$this->settings))->submission((int)$user['id'],$type,$id,$media,$error);
+            if(!$this->controlled($type,$id)) (new ManagerAlerts($this->config,$this->db,$this->settings))->submission((int)$user['id'],$type,$id,$media,$error);
             throw $error;
         }
     }
@@ -29,6 +30,7 @@ final class Requests
             if($library) throw new ApiError('This title is on Jellyfin. Open it there or request a manual review.',409);
         } catch(ApiError $e) { throw $e; } catch(\Throwable $e) { /* Library lookup is advisory; requests still deduplicate in SQLite. */ }
         return $this->db->transaction(function() use($user,$type,$id,$media) {
+            $this->checkControl($type,$id);
             $r=$this->db->one('SELECT * FROM requests WHERE media_type=? AND media_id=?',[$type,$id]);
             if(!$r) {
                 $this->db->run('INSERT INTO requests(media_type,media_id,media,created_at,updated_at) VALUES(?,?,?,?,?)',[$type,$id,json_encode($media,JSON_THROW_ON_ERROR),time(),time()]);
@@ -46,9 +48,20 @@ final class Requests
             return ['id'=>$rid,'status'=>$r['status'] ?? 'queued','message'=>$r ? 'You are following this request. Duplicate downloads are prevented.' : 'Request added. ScreenPort will find the best available download.'];
         });
     }
-    public function list(array $user): array
+    private function controlled(string $type,int $id): ?array
     {
-        $sql=$user['role']==='admin' ? 'SELECT r.* FROM requests r ORDER BY r.created_at DESC LIMIT 100' : 'SELECT r.* FROM requests r JOIN subscribers s ON s.request_id=r.id WHERE s.user_id=? ORDER BY r.created_at DESC LIMIT 100';
+        return $this->db->one('SELECT c.action FROM request_controls c JOIN requests r ON r.id=c.request_id WHERE r.media_type=? AND r.media_id=?',[$type,$id]);
+    }
+    private function checkControl(string $type,int $id): void
+    {
+        $control=$this->controlled($type,$id);
+        if($control) throw new ApiError($control['action']==='remove' ? 'This request was removed by an admin. Contact the download manager for review.' : 'This request is suspended or awaiting an admin action. Contact the download manager for review.',409);
+    }
+    public function list(array $user,bool $includeRemoved=false): array
+    {
+        if($includeRemoved && $user['role']!=='admin') throw new ApiError('Admin access required.',403);
+        $filter=$includeRemoved ? '1=1' : "r.status<>'removed'";
+        $sql=$user['role']==='admin' ? "SELECT r.* FROM requests r WHERE $filter ORDER BY r.created_at DESC LIMIT 100" : "SELECT r.* FROM requests r JOIN subscribers s ON s.request_id=r.id WHERE s.user_id=? AND $filter ORDER BY r.created_at DESC LIMIT 100";
         $rows=$this->db->all($sql,$user['role']==='admin' ? [] : [$user['id']]);
         $out=[];
         foreach($rows as $r) {
@@ -63,6 +76,7 @@ final class Requests
                 else $eta=max($eta,(int)($s['eta'] ?? 0));
             }
             unset($t);
+            if(in_array($r['status'],['suspended','suspending','resuming','removing','removed'],true)) { $speed=0; $unknown=true; }
             $progress=$total>0 ? $done/$total : ($r['status']==='complete' ? 1 : 0);
             $m=json_decode($r['media'],true);
             $out[]=['id'=>(int)$r['id'],'media'=>$m,'status'=>$r['status'],'message'=>$r['message'],'created_at'=>(int)$r['created_at'],
@@ -75,6 +89,7 @@ final class Requests
     {
         $this->db->transaction(function() use($id,$admin) {
             $r=$this->db->one('SELECT * FROM requests WHERE id=?',[$id]);
+            if($this->db->one('SELECT request_id FROM request_controls WHERE request_id=?',[$id])) throw new ApiError('Resume or restore this request before retrying.',409);
             if(!$r || $r['status']!=='failed') throw new ApiError('Only failed requests can be retried.',409);
             // Retain the original plan and torrent records: retry reconciles uncertain adds before trying again.
             $job=$this->db->one("SELECT * FROM jobs WHERE request_id=? AND kind='acquire'",[$id]);

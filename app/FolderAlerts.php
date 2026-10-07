@@ -19,7 +19,8 @@ final class FolderAlerts
     public function deliver(): void
     {
         if($this->config->demo()) return;
-        foreach($this->db->all("SELECT * FROM folder_alerts WHERE status='pending' AND due_at<=? LIMIT 25",[time()]) as $alert) {
+        foreach($this->db->all("SELECT * FROM folder_alerts WHERE status='pending' AND due_at<=? AND NOT EXISTS(SELECT 1 FROM request_controls c WHERE c.request_id=folder_alerts.request_id) LIMIT 25",[time()]) as $alert) {
+            if($this->db->one('SELECT request_id FROM request_controls WHERE request_id=?',[$alert['request_id']])) continue;
             try {
                 $request=$this->db->one('SELECT media FROM requests WHERE id=?',[$alert['request_id']]);
                 $content=Mailer::folderContent(json_decode($request['media'],true,512,JSON_THROW_ON_ERROR),$alert['path']);

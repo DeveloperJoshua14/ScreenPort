@@ -1,6 +1,6 @@
 <?php
 declare(strict_types=1);
-use ScreenPort\{ApiError,Auth,Http,Jellyfin,LibraryReviews,Qbit,Requests,SearchLog,Settings};
+use ScreenPort\{ApiError,Auth,Http,Jellyfin,LibraryReviews,Qbit,RequestControls,Requests,SearchLog,Settings};
 
 require dirname(__DIR__).'/app/bootstrap.php';
 header('Content-Type: application/json; charset=utf-8');
@@ -76,7 +76,7 @@ try {
         case 'library-review':
             $user=$auth->user(); session_write_close();
             $result=(new LibraryReviews($config,$db,$settings,$catalog))->request($user,$string($body,'type','',5),$integer($body,'id')); break;
-        case 'downloads': $result=['requests'=>$requests->list($auth->user())]; break;
+        case 'downloads': $result=['requests'=>$requests->list($auth->user(),$integer($_GET,'include_removed')===1)]; break;
         case 'profile':
             $user=$auth->user(); $old=$string($body,'current_password','',72); $new=$string($body,'new_password','',72);
             $row=$db->one('SELECT password_hash FROM users WHERE id=?',[$user['id']]);
@@ -119,6 +119,10 @@ try {
             if(!isset($body['settings']) || !is_array($body['settings'])) throw new ApiError('Invalid settings.',422);
             $settings->save($body['settings']); $db->audit((int)$admin['id'],'updated_settings'); $result=['message'=>'Settings saved. Blank secret fields keep existing values.']; break;
         case 'admin-retry': $admin=$auth->admin(); $requests->retry($integer($body,'id'),(int)$admin['id']); $result=['message'=>'Retry scheduled.']; break;
+        case 'admin-download-control':
+            $admin=$auth->admin(); session_write_close();
+            $db->limit('download-controls:'.$admin['id'],100,60);
+            $result=(new RequestControls($config,$db,$settings))->command($integer($body,'id'),$string($body,'command','',10),$admin); break;
         case 'admin-email-retry':
             $admin=$auth->admin();
             $db->transaction(function() use($db,$settings) {

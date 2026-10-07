@@ -65,7 +65,8 @@ final class ManagerAlerts
     public function deliver(): void
     {
         if($this->config->demo()) return;
-        foreach($this->db->all("SELECT * FROM manager_alerts WHERE status='pending' AND due_at<=? ORDER BY id LIMIT 25",[time()]) as $alert) {
+        foreach($this->db->all("SELECT * FROM manager_alerts WHERE status='pending' AND due_at<=? AND NOT EXISTS(SELECT 1 FROM request_controls c WHERE c.request_id=manager_alerts.request_id) ORDER BY id LIMIT 25",[time()]) as $alert) {
+            if($alert['request_id'] && $this->db->one('SELECT request_id FROM request_controls WHERE request_id=?',[$alert['request_id']])) continue;
             try {
                 $payload=json_decode($alert['payload'],true,512,JSON_THROW_ON_ERROR);
                 $user=$alert['user_id'] ? $this->db->one('SELECT id,username,email,role,created_at FROM users WHERE id=?',[$alert['user_id']]) : null;
