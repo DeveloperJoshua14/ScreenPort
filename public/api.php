@@ -1,6 +1,6 @@
 <?php
 declare(strict_types=1);
-use ScreenPort\{ApiError,Auth,Http,Jellyfin,Qbit,Requests,SearchLog,Settings};
+use ScreenPort\{ApiError,Auth,Http,Jellyfin,LibraryReviews,Qbit,Requests,SearchLog,Settings};
 
 require dirname(__DIR__).'/app/bootstrap.php';
 header('Content-Type: application/json; charset=utf-8');
@@ -61,7 +61,9 @@ try {
             if(!in_array($type,['movie','tv','all'],true) || ($q==='' && $type==='all')) throw new ApiError('Invalid catalog type.',422);
             // Release the session lock before making external catalog requests.
             session_write_close();
-            $result=$q!=='' ? $catalog->search($q,$type,$page) : $catalog->browse($type,$page); break;
+            $result=$q!=='' ? $catalog->search($q,$type,$page) : $catalog->browse($type,$page);
+            if(!$config->demo()) $result['results']=(new Jellyfin($settings,$db))->annotate($result['results']);
+            break;
         case 'media':
             $user=$auth->user(); $db->limit('detail:'.$user['id'],60,60); session_write_close();
             $media=$catalog->detail($string($_GET,'type','movie',5),$integer($_GET,'id'));
@@ -71,6 +73,9 @@ try {
         case 'request':
             $user=$auth->user(); session_write_close();
             $result=$requests->enqueue($user,$string($body,'type','',5),$integer($body,'id')); break;
+        case 'library-review':
+            $user=$auth->user(); session_write_close();
+            $result=(new LibraryReviews($config,$db,$settings,$catalog))->request($user,$string($body,'type','',5),$integer($body,'id')); break;
         case 'downloads': $result=['requests'=>$requests->list($auth->user())]; break;
         case 'profile':
             $user=$auth->user(); $old=$string($body,'current_password','',72); $new=$string($body,'new_password','',72);
@@ -115,9 +120,12 @@ try {
             $settings->save($body['settings']); $db->audit((int)$admin['id'],'updated_settings'); $result=['message'=>'Settings saved. Blank secret fields keep existing values.']; break;
         case 'admin-retry': $admin=$auth->admin(); $requests->retry($integer($body,'id'),(int)$admin['id']); $result=['message'=>'Retry scheduled.']; break;
         case 'admin-email-retry':
-            $admin=$auth->admin(); $db->run("UPDATE emails SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
-            $db->run("UPDATE folder_alerts SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
-            $db->run("UPDATE manager_alerts SET status='pending',attempts=0,due_at=?,recipient=CASE WHEN kind='account_requested' THEN ? ELSE ? END WHERE status='failed'",[time(),trim($settings->get('ACCOUNT_MANAGER_EMAIL')) ?: $settings->get('DOWNLOAD_MANAGER_EMAIL'),$settings->get('DOWNLOAD_MANAGER_EMAIL')]);
+            $admin=$auth->admin();
+            $db->transaction(function() use($db,$settings) {
+                $db->run("UPDATE emails SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
+                $db->run("UPDATE folder_alerts SET status='pending',attempts=0,due_at=? WHERE status='failed'",[time()]);
+                $db->run("UPDATE manager_alerts SET status='pending',attempts=0,due_at=?,recipient=CASE WHEN kind='account_requested' THEN ? WHEN kind='library_review_user' THEN COALESCE((SELECT email FROM users WHERE users.id=manager_alerts.user_id),'') ELSE ? END WHERE status='failed'",[time(),trim($settings->get('ACCOUNT_MANAGER_EMAIL')) ?: $settings->get('DOWNLOAD_MANAGER_EMAIL'),$settings->get('DOWNLOAD_MANAGER_EMAIL')]);
+            });
             $db->audit((int)$admin['id'],'retried_emails'); $result=['message'=>'Failed emails scheduled for retry.']; break;
         case 'admin-connections':
             $admin=$auth->admin(); $db->limit('connections:'.$admin['id'],5,300); session_write_close();

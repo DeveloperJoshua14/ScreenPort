@@ -12,6 +12,7 @@ final class Settings
         'QBITTORRENT_SEARCH_PLUGINS'=>['label'=>'Search plugins (enabled or names separated by |)','default'=>'enabled'],
         'TORRENT_ALLOWED_HOSTS'=>['label'=>'Allowed torrent file hosts (comma separated; magnets always supported)','default'=>''],
         'JELLYFIN_URL'=>['label'=>'Jellyfin URL','default'=>''],
+        'JELLYFIN_PUBLIC_URL'=>['label'=>'Jellyfin browser URL (optional; blank uses Jellyfin URL)','default'=>''],
         'JELLYFIN_API_KEY'=>['label'=>'Jellyfin API key','secret'=>true,'default'=>''],
         'OPENAI_API_KEY'=>['label'=>'OpenAI API key','secret'=>true,'default'=>''],
         'OPENAI_MODEL'=>['label'=>'OpenAI model with Structured Outputs','default'=>'gpt-4o-mini'],

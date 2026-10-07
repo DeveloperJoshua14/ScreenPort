@@ -1,0 +1,51 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const code = fs.readFileSync(require('node:path').join(__dirname, '../public/assets/app.js'), 'utf8');
+const escape = code.split('\n').find(line => line.startsWith('const esc ='));
+const start = code.indexOf('function fallbackPoster(');
+const end = code.indexOf('function bindClose(', start);
+const handlers = {};
+const nodes = {};
+const node = key => nodes[key] ||= { innerHTML: '', textContent: '', disabled: false, addEventListener(event, fn) { handlers[key + ':' + event] = fn; }, querySelectorAll() { return []; } };
+const context = vm.createContext({ URL, document: { querySelector: node }, state: { demo: false, media: [], view: 'other' }, icon: () => '', dialog: { open: true }, bindClose() {}, toast: () => {}, navigate: () => {}, api: async () => {} });
+vm.runInContext(escape + '\n' + code.slice(start, end), context);
+let checks = 0;
+function check(ok) { assert(ok); checks++; }
+const media = { id: 501, type: 'movie', title: '<script>Sample</script>', year: '2025', rating: 'PG-13', runtime: 120, seasons: [], genres: ['Drama'], original_language: 'en', available: true, library: { in_library: true, url: 'https://watch.example.test/web/#/details?id=abc&serverId=def' } };
+context.media = media;
+check(vm.runInContext('mediaCard(media)', context).includes('on-jellyfin'));
+check(vm.runInContext('mediaCard(media)', context).includes('On Jellyfin!'));
+check(!vm.runInContext('mediaCard(media)', context).includes('<script>'));
+media.type = 'tv'; check(vm.runInContext('mediaCard(media)', context).includes('on-jellyfin'));
+let html = vm.runInContext('mediaActions(media)', context);
+check(html.includes('Open in Jellyfin') && html.includes('review-media') && !html.includes('request-media'));
+check(html.includes('noopener noreferrer') && html.includes('https://watch.example.test/'));
+for (const url of ['javascript:alert(1)', 'data:text/html,x', 'https://user:secret@watch.example.test/']) {
+  media.library.url = url;
+  check(vm.runInContext('jellyfinLink(media)', context) === '');
+  check(!vm.runInContext('mediaActions(media)', context).includes('href='));
+}
+media.library.url = 'https://watch.example.test/web/#/details?id=abc&serverId=def';
+media.library = null; media.available = false;
+check(vm.runInContext('mediaCard(media)', context).includes('unavailable-label'));
+check(vm.runInContext('mediaActions(media)', context).includes('disabled>') && vm.runInContext('mediaActions(media)', context).includes('Not out Yet'));
+media.available = true; check(vm.runInContext('mediaActions(media)', context).includes('Request complete seasons'));
+media.type = 'movie'; check(vm.runInContext('mediaActions(media)', context).includes('Request movie'));
+media.library = { in_library: true, url: 'https://watch.example.test/web/#/details?id=abc&serverId=def' };
+(async () => {
+  const calls = [];
+  context.api = async (action, body) => { calls.push([action, body]); return body ? { message: 'Confirmation queued' } : media; };
+  await vm.runInContext('showMedia("movie:501")', context);
+  check(node('#media-detail').innerHTML.includes('jellyfin-detail') && node('#media-detail').innerHTML.includes('On Jellyfin!'));
+  const button = node('#review-media');
+  await handlers['#review-media:click']({ currentTarget: button });
+  check(calls.some(([action, body]) => action === 'library-review' && body.type === 'movie' && body.id === 501));
+  check(!calls.some(([action]) => action === 'request'));
+  check(button.disabled && button.textContent === 'Review requested');
+  check(node('#review-note').textContent === 'Confirmation queued');
+  context.api = async (action, body) => { if (body) throw new Error('Temporary failure'); return media; };
+  await handlers['#review-media:click']({ currentTarget: button });
+  check(!button.disabled);
+  console.log(`PASS: ${checks} Jellyfin card, link, review-action and escaping checks using the actual renderer.`);
+})().catch(error => { console.error(error); process.exitCode = 1; });

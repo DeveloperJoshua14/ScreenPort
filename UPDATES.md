@@ -21,3 +21,12 @@
 - **Reliable delivery:** Account/failure alerts are persisted privately, delivered by the worker, retried up to five times after SMTP failures, and included in the admin failed-email count/retry control. Alerts require a running worker and working SMTP; events before this update are not backfilled.
 
 All update ZIPs exclude the real `.env` and private storage. Installing an update does not require replacing those files. `ACCOUNT_MANAGER_EMAIL` is optional; its blank default uses the existing download manager address.
+
+## Jellyfin availability and manual review
+
+- Movies and shows detected on Jellyfin have a green card/detail treatment and “On Jellyfin!” label, including homepage and search results.
+- Detected titles offer **Open in Jellyfin** and **Not on Jellyfin? Request review** instead of an automatic download request. TV matches still explain that seasons or episodes may be missing.
+- An optional `JELLYFIN_PUBLIC_URL` supplies the browser-reachable Jellyfin server base address; links contain only item/server IDs, never API credentials.
+- Manual review freshly verifies the library match and queues a download-manager email with media/Jellyfin information and the requester's username, email, account ID, and role. The requester gets an email confirming that review was requested.
+- Reviews use private durable storage and email retries, suppress repeated clicks for 24 hours, and create no download jobs. The download API blocks detected movies and shows from bypassing the review flow.
+- New simulated integration, renderer, and real localhost HTTP tests cover library links, both email audiences, escaped media text, authenticated requester identity, duplicate suppression, and recipient-preserving email retry.

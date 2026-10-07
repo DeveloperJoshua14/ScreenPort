@@ -121,15 +121,32 @@ async function renderDiscover() {
 function fallbackPoster(media, index = 0) {
   return `<div class="poster-art tone-${index % 6}"><span class="poster-art-orb"></span><span class="poster-art-type">${media.type === 'movie' ? 'A MOTION PICTURE' : 'A TELEVISION SERIES'}</span><strong>${esc(media.title)}</strong><span class="poster-art-year">${esc(media.year)}</span></div>`;
 }
+function jellyfinLink(media) {
+  try {
+    const url = new URL(media.library?.url || '');
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : '';
+  } catch { return ''; }
+}
+function mediaCard(m, i = 0) {
+  const found = Boolean(m.library?.in_library), unavailable = !m.available && !found;
+  return `<button class="media-card ${found ? 'on-jellyfin' : unavailable ? 'unavailable' : ''}" data-media="${m.type}:${m.id}" aria-label="${esc(m.title)}${found ? ', On Jellyfin!' : unavailable ? ', Not out Yet' : ''}"><div class="poster-wrap">${m.poster ? `<img src="${esc(m.poster)}" alt="${esc(m.title)} poster" loading="lazy">` : fallbackPoster(m, i)}<div class="poster-overlay"><span>${icon('arrow', 22)}</span></div>${found ? `<span class="jellyfin-label">${icon('check', 13)} On Jellyfin!</span>` : unavailable ? '<span class="unavailable-label">Not out Yet</span>' : `<span class="poster-badge">${m.type === 'tv' ? icon('tv', 12) : icon('movie', 12)} ${m.type === 'tv' ? 'SERIES' : 'MOVIE'}</span>`}${m.score ? `<span class="poster-score">${icon('star', 12)} ${m.score}</span>` : ''}</div><h3>${esc(m.title)}</h3><div class="card-meta"><span>${esc(m.year || 'TBA')}</span><span class="meta-dot">·</span><span>${esc(m.genres[0] || (m.type === 'tv' ? 'TV show' : 'Movie'))}</span></div></button>`;
+}
+function mediaActions(m) {
+  if (m.library?.in_library) {
+    const url = jellyfinLink(m);
+    return `<div class="library-actions">${url ? `<a class="button primary full" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon('arrow', 18)} Open in Jellyfin</a>` : `<button class="button primary full" disabled>Open in Jellyfin</button><p class="detail-note">The Jellyfin link is unavailable. Ask your admin to check the connection.</p>`}<button id="review-media" class="button secondary full" ${state.demo ? 'disabled' : ''}>${icon('mail', 18)} Not on Jellyfin? Request review</button><p class="detail-note" id="review-note">The download manager will review this title. You will receive an email confirmation.</p></div>`;
+  }
+  return `<button id="request-media" class="button primary full" ${!m.available || state.demo ? 'disabled' : ''}>${icon('download', 18)} ${!m.available ? 'Not out Yet' : state.demo ? 'Downloads disabled in preview' : m.type === 'tv' ? 'Request complete seasons' : 'Request movie'}</button>`;
+}
 function renderCatalog() {
   const content = document.querySelector('#catalog-content');
   if (!state.media.length) {
     content.innerHTML = `<div class="empty-state">${icon('search', 38)}<h2>No titles found.</h2><p>Try another title, or search using its original name.</p></div>`; return;
   }
   const featured = !state.query && state.page === 1 ? state.media.find(m => m.available && m.backdrop) || state.media.find(m => m.available) : null;
-  content.innerHTML = `${featured ? `<section class="featured">${featured.backdrop ? `<img class="featured-image" src="${esc(featured.backdrop)}" alt="" fetchpriority="high">` : '<div class="featured-abstract"></div>'}<div class="featured-shade"></div><div class="featured-content"><span class="featured-label"><span class="live-dot"></span> TONIGHT’S PICK</span><h2>${esc(featured.title)}</h2><div class="metadata"><span>${esc(featured.year)}</span><span>${esc(featured.rating)}</span><span>${esc(featured.genres.slice(0, 2).join(' / '))}</span>${featured.score ? `<span class="score">${icon('star', 14)} ${featured.score}</span>` : ''}</div><p>${esc(featured.overview)}</p><button class="button primary" data-media="${featured.type}:${featured.id}">Explore this title ${icon('arrow', 18)}</button></div><div class="featured-side-label">A STORY WORTH STAYING IN FOR</div></section>` : ''}
+  content.innerHTML = `${featured ? `<section class="featured ${featured.library?.in_library ? 'on-jellyfin' : ''}">${featured.backdrop ? `<img class="featured-image" src="${esc(featured.backdrop)}" alt="" fetchpriority="high">` : '<div class="featured-abstract"></div>'}<div class="featured-shade"></div><div class="featured-content"><span class="featured-label"><span class="live-dot"></span> ${featured.library?.in_library ? 'On Jellyfin!' : 'TONIGHT’S PICK'}</span><h2>${esc(featured.title)}</h2><div class="metadata"><span>${esc(featured.year)}</span><span>${esc(featured.rating)}</span><span>${esc(featured.genres.slice(0, 2).join(' / '))}</span>${featured.score ? `<span class="score">${icon('star', 14)} ${featured.score}</span>` : ''}</div><p>${esc(featured.overview)}</p><button class="button primary" data-media="${featured.type}:${featured.id}">Explore this title ${icon('arrow', 18)}</button></div><div class="featured-side-label">A STORY WORTH STAYING IN FOR</div></section>` : ''}
   <div class="section-heading"><div><h2>${state.query ? 'Search results' : state.type === 'tv' ? 'New series. New obsessions.' : 'New to your screen'}</h2><p>${state.query ? `${state.media.length} titles on this page` : 'The latest releases, ready for your watchlist.'}</p></div><span class="muted small">${state.query ? '' : 'Home releases are verified before download'}</span></div>
-  <div class="poster-grid">${state.media.map((m, i) => `<button class="media-card ${!m.available ? 'unavailable' : ''}" data-media="${m.type}:${m.id}" aria-label="${esc(m.title)}${!m.available ? ', Not out Yet' : ''}"><div class="poster-wrap">${m.poster ? `<img src="${esc(m.poster)}" alt="${esc(m.title)} poster" loading="lazy">` : fallbackPoster(m, i)}<div class="poster-overlay"><span>${icon('arrow', 22)}</span></div>${!m.available ? '<span class="unavailable-label">Not out Yet</span>' : `<span class="poster-badge">${m.type === 'tv' ? icon('tv', 12) : icon('movie', 12)} ${m.type === 'tv' ? 'SERIES' : 'MOVIE'}</span>`}${m.score ? `<span class="poster-score">${icon('star', 12)} ${m.score}</span>` : ''}</div><h3>${esc(m.title)}</h3><div class="card-meta"><span>${esc(m.year || 'TBA')}</span><span class="meta-dot">·</span><span>${esc(m.genres[0] || (m.type === 'tv' ? 'TV show' : 'Movie'))}</span></div></button>`).join('')}</div>
+  <div class="poster-grid">${state.media.map(mediaCard).join('')}</div>
   <div class="pagination"><button class="button secondary" id="previous-page" ${state.page <= 1 ? 'disabled' : ''}>Previous</button><span>Page ${state.page} of ${state.totalPages || 1}</span><button class="button secondary" id="next-page" ${state.page >= state.totalPages ? 'disabled' : ''}>Next ${icon('arrow', 16)}</button></div>`;
   content.querySelectorAll('[data-media]').forEach(button => button.addEventListener('click', () => showMedia(button.dataset.media)));
   document.querySelector('#previous-page').addEventListener('click', () => { state.page--; renderDiscover(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
@@ -144,16 +161,27 @@ async function showMedia(key) {
   try {
     const m = await api('media', undefined, { type, id });
     if (!dialog.open) return;
-    const inLibrary = m.type === 'movie' && m.library?.in_library;
-    target.innerHTML = `<button class="dialog-close" data-close aria-label="Close">${icon('close')}</button><div class="detail-layout ${m.available ? '' : 'unavailable-detail'}"><div class="detail-poster">${m.poster ? `<img src="${esc(m.poster)}" alt="${esc(m.title)} poster">` : fallbackPoster(m)}</div><div class="detail-copy"><span class="eyebrow">${m.type === 'tv' ? 'TELEVISION SERIES' : 'MOVIE'}</span><h2>${esc(m.title)}</h2><div class="metadata"><span>${esc(m.year)}</span><span class="rating-badge">${esc(m.rating)}</span><span>${m.type === 'movie' ? `${m.runtime} min` : `${m.seasons.filter(s => s.season_number > 0).length} seasons`}</span>${m.score ? `<span class="score">${icon('star', 14)} ${m.score}</span>` : ''}</div><p class="detail-genres">${esc(m.genres.join(' · '))}</p><p class="detail-overview">${esc(m.overview || 'No synopsis available.')}</p><dl class="detail-facts"><div><dt>Release date</dt><dd>${esc(m.release_date || 'To be announced')}</dd></div><div><dt>Home release</dt><dd>${esc(m.home_release || 'Not confirmed')}</dd></div><div><dt>Original language</dt><dd>${esc(m.original_language.toUpperCase())}</dd></div></dl><div class="availability ${m.available ? 'available' : 'pending'}">${icon(m.available ? 'check' : 'clock', 16)} ${esc(m.availability_note)}</div>
-    ${m.library?.in_library ? `<div class="availability available">${icon('check', 16)} ${m.type === 'tv' ? 'Series found in Jellyfin · season coverage may vary' : 'Already in your Jellyfin library'}</div>` : ''}
-    <button id="request-media" class="button primary full" ${!m.available || inLibrary || state.demo ? 'disabled' : ''}>${icon('download', 18)} ${!m.available ? 'Not out Yet' : inLibrary ? 'In your library' : state.demo ? 'Downloads disabled in preview' : m.type === 'tv' ? 'Request complete seasons' : 'Request movie'}</button>
-    <p class="detail-note">${m.type === 'tv' ? 'ScreenPort looks for an all-season pack first, then separate complete seasons. Seasons still airing are skipped.' : 'ScreenPort checks the title, language, quality, and size before choosing a download.'} An email update follows after downloads begin.</p></div></div>`;
+    const inLibrary = Boolean(m.library?.in_library);
+    const card = state.media.find(item => item.type === m.type && item.id === m.id);
+    if (card) { card.library = m.library; if (state.view === 'discover') renderCatalog(); }
+    target.innerHTML = `<button class="dialog-close" data-close aria-label="Close">${icon('close')}</button><div class="detail-layout ${inLibrary ? 'jellyfin-detail' : m.available ? '' : 'unavailable-detail'}"><div class="detail-poster">${m.poster ? `<img src="${esc(m.poster)}" alt="${esc(m.title)} poster">` : fallbackPoster(m)}</div><div class="detail-copy"><span class="eyebrow">${m.type === 'tv' ? 'TELEVISION SERIES' : 'MOVIE'}</span><h2>${esc(m.title)}</h2><div class="metadata"><span>${esc(m.year)}</span><span class="rating-badge">${esc(m.rating)}</span><span>${m.type === 'movie' ? `${m.runtime} min` : `${m.seasons.filter(s => s.season_number > 0).length} seasons`}</span>${m.score ? `<span class="score">${icon('star', 14)} ${m.score}</span>` : ''}</div><p class="detail-genres">${esc(m.genres.join(' · '))}</p><p class="detail-overview">${esc(m.overview || 'No synopsis available.')}</p><dl class="detail-facts"><div><dt>Release date</dt><dd>${esc(m.release_date || 'To be announced')}</dd></div><div><dt>Home release</dt><dd>${esc(m.home_release || 'Not confirmed')}</dd></div><div><dt>Original language</dt><dd>${esc(m.original_language.toUpperCase())}</dd></div></dl><div class="availability ${m.available ? 'available' : 'pending'}">${icon(m.available ? 'check' : 'clock', 16)} ${esc(m.availability_note)}</div>
+    ${inLibrary ? `<div class="availability available jellyfin-status">${icon('check', 16)} On Jellyfin!</div>${m.type === 'tv' ? '<p class="detail-note">Some seasons or episodes may be missing.</p>' : ''}` : ''}
+    ${mediaActions(m)}
+    <p class="detail-note">${inLibrary ? 'Open Jellyfin to watch, or request a review if the title is missing or inaccessible.' : m.type === 'tv' ? 'ScreenPort looks for an all-season pack first, then separate complete seasons. Seasons still airing are skipped.' : 'ScreenPort checks the title, language, quality, and size before choosing a download.'}${inLibrary ? '' : ' An email update follows after downloads begin.'}</p></div></div>`;
     bindClose(dialog);
-    document.querySelector('#request-media').addEventListener('click', async event => {
+    document.querySelector('#request-media')?.addEventListener('click', async event => {
       event.currentTarget.disabled = true;
       try { const r = await api('request', { type: m.type, id: m.id }); dialog.close(); toast(r.message); navigate('downloads'); }
       catch (error) { toast(error.message, true); if (dialog.open) document.querySelector('#request-media').disabled = false; }
+    });
+    document.querySelector('#review-media')?.addEventListener('click', async event => {
+      const button = event.currentTarget; button.disabled = true;
+      try {
+        const r = await api('library-review', { type: m.type, id: m.id });
+        button.textContent = 'Review requested';
+        if (dialog.open) document.querySelector('#review-note').textContent = r.message;
+        toast(r.message);
+      } catch (error) { toast(error.message, true); button.disabled = false; }
     });
   } catch (error) { target.innerHTML = `<button class="dialog-close" data-close aria-label="Close">${icon('close')}</button><div class="empty-state"><h2>Unable to open this title.</h2><p>${esc(error.message)}</p></div>`; bindClose(dialog); }
 }
@@ -235,7 +263,7 @@ function renderAdminContent(data) {
   if (state.adminTab === 'settings') {
     const groups = [
       ['Catalog & selection', ['TMDB_READ_ACCESS_TOKEN', 'REGION', 'TIMEZONE', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'SELECTION_MIN_CONFIDENCE', 'ASSUME_ORIGINAL_AUDIO']],
-      ['Download connections', ['QBITTORRENT_URL', 'QBITTORRENT_USERNAME', 'QBITTORRENT_PASSWORD', 'QBITTORRENT_SEARCH_PLUGINS', 'TORRENT_ALLOWED_HOSTS', 'JELLYFIN_URL', 'JELLYFIN_API_KEY']],
+      ['Download connections', ['QBITTORRENT_URL', 'QBITTORRENT_USERNAME', 'QBITTORRENT_PASSWORD', 'QBITTORRENT_SEARCH_PLUGINS', 'TORRENT_ALLOWED_HOSTS', 'JELLYFIN_URL', 'JELLYFIN_PUBLIC_URL', 'JELLYFIN_API_KEY']],
       ['Folders & quality', ['MOVIE_ROOT', 'MOVIE_EXISTING_FOLDERS', 'ALLOW_NEW_MOVIE_FOLDERS', 'MOVIE_FOLDER_OVERRIDES', 'MOVIE_GENRE_MAP', 'TV_ROOT', 'MATURE_TV_ROOT', 'MATURE_RATINGS', 'UNKNOWN_RATING_MATURE', 'MAX_TORRENT_GB', 'TV_MAX_GIB_PER_HOUR', 'SEARCH_TIMEOUT']],
       ['Email notifications', ['DOWNLOAD_MANAGER_EMAIL', 'ACCOUNT_MANAGER_EMAIL', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'SMTP_ENCRYPTION', 'MAIL_FROM_ADDRESS', 'MAIL_FROM_NAME']],
       ['Access & requests', ['REGISTRATION_OPEN', 'DOWNLOADS_ENABLED', 'REQUEST_LIMIT_PER_DAY', 'DOWNLOAD_START_TIMEOUT_MINUTES']],

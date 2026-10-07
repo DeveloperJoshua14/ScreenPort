@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS manager_alerts (
  status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, due_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS manager_alerts_due ON manager_alerts(status,due_at);
+CREATE TABLE IF NOT EXISTS library_reviews (
+ id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), media_type TEXT NOT NULL, media_id INTEGER NOT NULL,
+ media TEXT NOT NULL, library TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS library_reviews_user_media ON library_reviews(user_id,media_type,media_id,created_at);
 CREATE TABLE IF NOT EXISTS manager_alert_epochs (
  request_id INTEGER PRIMARY KEY REFERENCES requests(id), generation INTEGER NOT NULL DEFAULT 0
 );

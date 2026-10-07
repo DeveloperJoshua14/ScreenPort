@@ -26,7 +26,7 @@ final class Requests
         if(!$media['available']) throw new ApiError('Not out Yet. '.$media['availability_note'],422);
         try {
             $library=(new Jellyfin($this->settings,$this->db))->find($media);
-            if($library && $type==='movie') throw new ApiError('This movie is already in your Jellyfin library.',409);
+            if($library) throw new ApiError('This title is on Jellyfin. Open it there or request a manual review.',409);
         } catch(ApiError $e) { throw $e; } catch(\Throwable $e) { /* Library lookup is advisory; requests still deduplicate in SQLite. */ }
         return $this->db->transaction(function() use($user,$type,$id,$media) {
             $r=$this->db->one('SELECT * FROM requests WHERE media_type=? AND media_id=?',[$type,$id]);

@@ -50,7 +50,7 @@ final class Mailer
             'text'=>$text,'html'=>'<div style="font-family:Arial,sans-serif;max-width:620px"><h1>New movie folder</h1><p>Movie: '.$esc($title).
             '</p><p>Destination: <strong>'.$esc($path).'</strong></p><p>This destination is outside your existing movie folder list. Check the Movies library in Jellyfin and add this location if needed.</p><p>qBittorrent was asked to save here; ScreenPort cannot inspect the remote filesystem. This alert is sent once per destination, separately from download updates.</p></div>'];
     }
-    private static function managerContent(string $subject,string $heading,array $details,string $action,string $site): array
+    private static function managerContent(string $subject,string $heading,array $details,string $action,string $site,bool $admin=true): array
     {
         $esc=static fn($v)=>htmlspecialchars((string)$v,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');
         $text=$heading."\n\n"; $html='<div style="font-family:Arial,sans-serif;max-width:620px"><h1>'.$esc($heading).'</h1>';
@@ -59,7 +59,7 @@ final class Mailer
         $url=parse_url($site);
         if($url && in_array($url['scheme'] ?? '',['https','http'],true) && !empty($url['host']) && !isset($url['user']) && !isset($url['pass']) && !preg_match('/[\x00-\x20\x7f]/',$site)) {
             $text.="Open ScreenPort: ".$site."\n";
-            $html.='<p><a href="'.$esc($site).'">Open ScreenPort</a> (admin sign-in required)</p>';
+            $html.='<p><a href="'.$esc($site).'">Open ScreenPort</a> ('.($admin ? 'admin ' : '').'sign-in required)</p>';
         }
         return ['subject'=>$subject,'text'=>$text,'html'=>$html.'</div>'];
     }
@@ -69,6 +69,22 @@ final class Mailer
         return self::managerContent('ScreenPort: account approval requested','New account request',
             ['Username'=>$user['username'],'Email'=>$user['email']],
             'Open Administration → Accounts to review this request. The account requires approval before sign-in.',$site);
+    }
+    public static function reviewContent(array $media,array $library,array $user,int $review,bool $manager,string $site): array
+    {
+        $details=['Media'=>$media['title'],'Type'=>$media['type']==='tv' ? 'TV show' : 'Movie','Year'=>$media['year'] ?? '',
+            'Content rating'=>$media['rating'] ?? 'Unknown','Release date'=>$media['release_date'] ?? '', 'TMDB ID'=>(string)$media['id'],
+            'Review ID'=>(string)$review,'Jellyfin detection'=>'On Jellyfin!','Detected title'=>$library['name'] ?? $media['title']];
+        if($manager) $details+=['Requester username'=>$user['username'],'Requester email'=>$user['email'],'Requester user ID'=>(string)$user['id'],'Requester role'=>$user['role']];
+        $action=$manager ? 'The requester is still requesting this title despite its Jellyfin match and has asked for a manual review. Check access, missing seasons or episodes, and the library match. Contact the requester using the email above if needed. The review has been requested; no additional download has been started.'
+            : 'Your manual review has been requested. ScreenPort detected this title on Jellyfin, but you reported that it may be missing or inaccessible. Your review is queued for the download manager, who can contact you at your account email. No additional download has been started.';
+        if($media['type']==='tv') $action.=' A series match does not confirm that every season or episode is present.';
+        $content=self::managerContent($manager ? 'ScreenPort: Jellyfin title review requested' : 'ScreenPort: your review request was received',
+            $manager ? 'Jellyfin title needs manual review' : 'Your review request was received',$details,$action,$site,$manager);
+        if(!empty($media['poster']) && preg_match('~^https://image\.tmdb\.org/t/p/w500/[A-Za-z0-9._-]+$~',$media['poster'])) {
+            $content['html']=str_replace('</div>','<p><img src="'.htmlspecialchars($media['poster'],ENT_QUOTES,'UTF-8').'" width="160" alt="Media cover"></p></div>',$content['html']);
+        }
+        return $content;
     }
     public static function failureContent(array $payload,?int $request,string $username,string $site): array
     {

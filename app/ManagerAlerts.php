@@ -26,6 +26,13 @@ final class ManagerAlerts
         // Store only the user reference, never the submitted password or request body.
         $this->queue('account:'.$user,'account_requested',$recipient,[],$user);
     }
+    public function review(int $review,int $user): void
+    {
+        $email=$this->db->one('SELECT email FROM users WHERE id=?',[$user])['email'] ?? '';
+        $manager=$this->settings->get('DOWNLOAD_MANAGER_EMAIL');
+        $this->queue('library-review:'.$review.':manager','library_review_manager',$manager,['review_id'=>$review],$user);
+        if(strcasecmp(trim($email),trim($manager))!==0) $this->queue('library-review:'.$review.':user','library_review_user',$email,['review_id'=>$review],$user);
+    }
     public function submission(int $user,string $type,int $id,?array $media,\Throwable $error): void
     {
         $payload=(new SearchLog($this->db,$this->settings))->redact([
@@ -61,13 +68,17 @@ final class ManagerAlerts
         foreach($this->db->all("SELECT * FROM manager_alerts WHERE status='pending' AND due_at<=? ORDER BY id LIMIT 25",[time()]) as $alert) {
             try {
                 $payload=json_decode($alert['payload'],true,512,JSON_THROW_ON_ERROR);
-                $user=$alert['user_id'] ? $this->db->one('SELECT username,email,created_at FROM users WHERE id=?',[$alert['user_id']]) : null;
-                $content=$alert['kind']==='account_requested'
-                    ? Mailer::accountContent($user,$this->config->get('APP_URL'))
-                    : Mailer::failureContent((new SearchLog($this->db,$this->settings))->redact($payload),$alert['request_id'] ? (int)$alert['request_id'] : null,$user['username'] ?? '',$this->config->get('APP_URL'));
+                $user=$alert['user_id'] ? $this->db->one('SELECT id,username,email,role,created_at FROM users WHERE id=?',[$alert['user_id']]) : null;
+                if(in_array($alert['kind'],['library_review_manager','library_review_user'],true)) {
+                    $review=$this->db->one('SELECT * FROM library_reviews WHERE id=?',[(int)($payload['review_id'] ?? 0)]);
+                    if(!$review || !$user || (int)$review['user_id']!==(int)$user['id']) throw new \RuntimeException('The library review is unavailable.');
+                    $content=Mailer::reviewContent(json_decode($review['media'],true,512,JSON_THROW_ON_ERROR),json_decode($review['library'],true,512,JSON_THROW_ON_ERROR),$user,(int)$review['id'],$alert['kind']==='library_review_manager',$this->config->get('APP_URL'));
+                } else $content=$alert['kind']==='account_requested'
+                        ? Mailer::accountContent($user,$this->config->get('APP_URL'))
+                        : Mailer::failureContent((new SearchLog($this->db,$this->settings))->redact($payload),$alert['request_id'] ? (int)$alert['request_id'] : null,$user['username'] ?? '',$this->config->get('APP_URL'));
                 if(trim($alert['recipient'])==='') {
-                    $alert['recipient']=$alert['kind']==='account_requested'
-                        ? (trim($this->settings->get('ACCOUNT_MANAGER_EMAIL')) ?: $this->settings->get('DOWNLOAD_MANAGER_EMAIL')) : $this->settings->get('DOWNLOAD_MANAGER_EMAIL');
+                    $alert['recipient']=$alert['kind']==='library_review_user' ? ($user['email'] ?? '') : ($alert['kind']==='account_requested'
+                        ? (trim($this->settings->get('ACCOUNT_MANAGER_EMAIL')) ?: $this->settings->get('DOWNLOAD_MANAGER_EMAIL')) : $this->settings->get('DOWNLOAD_MANAGER_EMAIL'));
                     $this->db->run('UPDATE manager_alerts SET recipient=? WHERE id=?',[$alert['recipient'],$alert['id']]);
                 }
                 if(!filter_var($alert['recipient'],FILTER_VALIDATE_EMAIL)) throw new \RuntimeException('Manager email is missing or invalid.');
